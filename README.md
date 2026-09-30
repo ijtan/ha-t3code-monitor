@@ -1,4 +1,4 @@
-# T3 Code — Home Assistant integration
+# T3 Code Monitor for Home Assistant
 
 Monitor an **already-running** T3 Code environment from Home Assistant. This is a HACS custom integration, not a Home Assistant add-on: it does not install or run T3 Code, and it does not publish activity to T3 Connect. It can connect directly to a local environment or through an already-configured T3 Connect route.
 
@@ -17,8 +17,8 @@ T3 Code's shell RPC is currently an in-source client/server contract, not a docu
 Until this repository is accepted into HACS's default store, add it as a custom repository:
 
 1. In HACS, open **Integrations → ⋮ → Custom repositories**.
-2. Add this GitHub repository URL and choose **Integration** as the category.
-3. Install **T3 Code**, restart Home Assistant, then add it from **Settings → Devices & services**.
+2. Add `https://github.com/ijtan/ha-t3code-monitor` and choose **Integration** as the category.
+3. Install **T3 Code Monitor**, restart Home Assistant, then add it from **Settings → Devices & services**.
 
 Manual installation is also possible: copy `custom_components/t3code` into Home Assistant's `custom_components` directory and restart.
 
@@ -36,7 +36,7 @@ The integration exchanges the one-time credential for a bearer session narrowed 
 
 ## Entities
 
-Each environment creates count sensors for `starting`, `running`, `ready`, `idle`, `interrupted`, `stopped`, and `error`, plus threads without a session, pending approvals, pending input, running turns, and visible threads. These describe visible, unarchived T3 threads—not OS processes. The connection binary sensor reflects whether the integration can reach and synchronize with the environment.
+Each environment creates count sensors for `starting`, `running`, `ready`, `idle`, `interrupted`, `stopped`, and `error`, plus threads without a session, pending approvals, pending input, running turns, and visible threads. These describe visible, unarchived T3 threads, not operating-system processes. The connection binary sensor reflects whether the integration can reach and synchronize with the environment.
 
 ## Limitations
 

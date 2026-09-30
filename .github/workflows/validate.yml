@@ -1,4 +1,4 @@
-name: Validate integration
+name: Validate T3 Code Monitor
 
 on:
   push:

@@ -67,7 +67,7 @@ class T3CodeConfigFlow(ConfigFlow, domain=DOMAIN):
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_NAME, default="T3 Code"): str,
+                vol.Required(CONF_NAME, default="T3 Code Monitor"): str,
                 vol.Required(CONF_BASE_URL): str,
                 vol.Required(CONF_TOKEN): selector.TextSelector(
                     selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)

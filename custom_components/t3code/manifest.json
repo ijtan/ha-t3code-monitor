@@ -1,12 +1,12 @@
 {
   "domain": "t3code",
-  "name": "T3 Code",
+  "name": "T3 Code Monitor",
   "codeowners": ["@ijtan"],
   "config_flow": true,
-  "documentation": "https://github.com/ijtan/ha-t3code",
+  "documentation": "https://github.com/ijtan/ha-t3code-monitor",
   "integration_type": "service",
   "iot_class": "cloud_push",
-  "issue_tracker": "https://github.com/ijtan/ha-t3code/issues",
+  "issue_tracker": "https://github.com/ijtan/ha-t3code-monitor/issues",
   "requirements": [],
   "version": "0.1.0"
 }

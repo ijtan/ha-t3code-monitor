@@ -44,7 +44,7 @@ class T3CodeConnectionSensor(
             "identifiers": {(DOMAIN, entry.entry_id)},
             "name": coordinator.environment_name,
             "manufacturer": "T3",
-            "model": "T3 Code environment",
+            "model": "T3 Code Monitor",
         }
 
     @property

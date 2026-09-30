@@ -2,10 +2,10 @@
   "config": {
     "step": {
       "user": {
-        "title": "Connect to T3 Code",
+        "title": "Connect to T3 Code Monitor",
         "description": "Enter the environment URL and a one-time T3 pairing credential. It will be exchanged for an orchestration:read-only session.",
         "data": {
-          "name": "Environment name",
+          "name": "Name",
           "base_url": "Environment base URL",
           "token": "One-time pairing credential"
         }
@@ -23,7 +23,7 @@
   "options": {
     "step": {
       "init": {
-        "title": "Renew T3 Code connection",
+        "title": "Renew T3 Code Monitor connection",
         "description": "Create a new one-time pairing credential on the T3 host and exchange it for a fresh read-only session.",
         "data": {
           "token": "One-time pairing credential"
