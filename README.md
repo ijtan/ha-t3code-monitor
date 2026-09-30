@@ -44,3 +44,7 @@ Each environment creates count sensors for `starting`, `running`, `ready`, `idle
 - The stream is a coalesced state projection, not an audit log. Brief intermediate states may not appear.
 - Reconnect snapshots reconcile current state and do not replay missed transitions.
 - Usage, cost, quota, and HA events are not included in this MVP.
+
+## License
+
+This project is licensed under **GNU GPL version 3 only**. See [LICENSE](LICENSE).
