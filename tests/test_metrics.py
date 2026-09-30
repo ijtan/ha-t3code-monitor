@@ -1,6 +1,6 @@
 """Tests for the T3 shell aggregate projection."""
 
-from custom_components.t3code.metrics import shell_metrics
+from custom_components.t3code.metrics import combine_shell_metrics, shell_metrics
 
 
 def test_shell_metrics_counts_statuses_and_attention_flags() -> None:
@@ -34,3 +34,14 @@ def test_shell_metrics_counts_statuses_and_attention_flags() -> None:
         "running_turns": 1,
         "threads": 3,
     }
+
+
+def test_combine_metrics_sums_counts_across_environments() -> None:
+    first = shell_metrics({"one": {"session": {"status": "running"}}})
+    second = shell_metrics({"two": {"hasPendingApprovals": True}})
+
+    combined = combine_shell_metrics([first, second])
+
+    assert combined["session_running"] == 1
+    assert combined["pending_approvals"] == 1
+    assert combined["threads"] == 2

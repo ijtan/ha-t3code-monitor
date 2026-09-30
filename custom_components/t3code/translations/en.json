@@ -28,7 +28,7 @@
       },
       "connect_environment": {
         "title": "Choose a T3 Code environment",
-        "description": "Select an environment already linked to your T3 Connect account.",
+        "description": "Select one or more environments already linked to your T3 Connect account. The selected environments will share aggregate sensors.",
         "data": {"environment_id": "Environment"}
       }
     },
@@ -36,6 +36,7 @@
       "invalid_url": "Enter an HTTP or HTTPS base URL.",
       "cannot_connect": "Could not connect to the T3 Code environment. Check the URL and network access.",
       "no_environments": "No T3 Code environments are linked to this T3 Connect account.",
+      "select_environment": "Select at least one environment.",
       "invalid_pairing_credential": "The pairing credential was rejected, expired, or could not be exchanged for orchestration:read. Create a new pairing credential and try again."
     },
     "abort": {

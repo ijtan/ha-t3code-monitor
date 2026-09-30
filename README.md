@@ -51,7 +51,7 @@ The setup form shows the latest connection diagnostic, and Home Assistant logs a
 
 ### T3 Connect account setup
 
-Choose **T3 Connect account** during setup to authorize Home Assistant with T3's OAuth device flow, select an environment already linked to the account, and connect through its managed relay endpoint. Home Assistant stores the refresh credential and a per-entry DPoP proof key so the connection can be renewed from the integration's **Configure** action. This uses the production T3 Connect client configuration and is intended for T3's production relay. It does not create environment links or change T3 settings.
+Choose **T3 Connect account** during setup to authorize Home Assistant with T3's OAuth device flow, select one or more environments already linked to the account, and connect through their managed relay endpoints. The aggregate sensors sum counts across the selected environments, and the connection health sensor is on only while every selected environment is reachable. Home Assistant stores the refresh credential and DPoP proof key so connections can be renewed from the integration's **Configure** action. This uses the production T3 Connect client configuration and is intended for T3's production relay. It does not create environment links or change T3 settings.
 
 ## License
 

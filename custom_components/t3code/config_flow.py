@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any
 from urllib.parse import urlsplit
@@ -162,7 +163,6 @@ class T3CodeConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_show_progress_done(next_step_id="connect_environment")
         if not hasattr(self, "_device"):
             try:
-                self._connect_name = "T3 Code Monitor"
                 self._connect = T3Connect(async_get_clientsession(self.hass))
                 self._device = await self._connect.begin_device_authorization()
             except T3ClientError as err:
@@ -196,39 +196,80 @@ class T3CodeConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_show_form(
                 step_id="connect_environment",
                 data_schema=vol.Schema(
-                    {vol.Required("environment_id"): vol.In(self._environment_choices)}
+                    {
+                        vol.Required(
+                            "environment_id", default=list(self._environment_choices)
+                        ): selector.SelectSelector(
+                            selector.SelectSelectorConfig(
+                                options=[
+                                    {"value": environment_id, "label": label}
+                                    for environment_id, label in self._environment_choices.items()
+                                ],
+                                multiple=True,
+                            ),
+                        )
+                    }
                 ),
             )
-        environment_id = user_input["environment_id"]
-        record = next(
-            item
-            for item in self._environment_records
-            if item["environmentId"] == environment_id
-        )
+        environment_ids = user_input["environment_id"]
+        if not environment_ids:
+            return self.async_show_form(
+                step_id="connect_environment",
+                data_schema=vol.Schema(
+                    {
+                        vol.Required(
+                            "environment_id", default=list(self._environment_choices)
+                        ): selector.SelectSelector(
+                            selector.SelectSelectorConfig(
+                                options=[
+                                    {"value": environment_id, "label": label}
+                                    for environment_id, label in self._environment_choices.items()
+                                ],
+                                multiple=True,
+                            )
+                        )
+                    }
+                ),
+                errors={"base": "select_environment"},
+            )
+        records = {
+            item["environmentId"]: item for item in self._environment_records
+        }
+        connected: list[dict[str, Any]] = []
         try:
-            endpoint, token = await self._connect.connect_environment(
-                self._cloud_tokens["access_token"], environment_id
-            )
-            client = T3Client(
-                async_get_clientsession(self.hass), endpoint, token, self._connect
-            )
-            await client.shell_snapshot()
+            session = async_get_clientsession(self.hass)
+            for environment_id in environment_ids:
+                record = records[environment_id]
+                endpoint, token = await self._connect.connect_environment(
+                    self._cloud_tokens["access_token"], environment_id
+                )
+                client = T3Client(session, endpoint, token, self._connect)
+                await client.shell_snapshot()
+                connected.append(
+                    {
+                        "environment_id": environment_id,
+                        "name": record["label"],
+                        "base_url": endpoint,
+                        "token": token,
+                        "dpop_key": self._connect.private_key_pem,
+                    }
+                )
         except T3ClientError as err:
             _LOGGER.warning(
-                "Could not connect to selected T3 Connect environment: %s", err
+                "Could not connect to selected T3 Connect environments: %s", err
             )
             return self.async_abort(reason="cannot_connect")
-        await self.async_set_unique_id(environment_id)
+        unique = hashlib.sha256(
+            ",".join(sorted(environment_ids)).encode()
+        ).hexdigest()
+        await self.async_set_unique_id(f"t3-connect-{unique}")
         self._abort_if_unique_id_configured()
         return self.async_create_entry(
-            title=record["label"],
+            title=f"T3 Code Monitor ({len(connected)} environments)",
             data={
-                CONF_BASE_URL: endpoint,
-                CONF_TOKEN: token,
-                CONF_NAME: self._connect_name,
-                "environment_id": environment_id,
-                "connection_type": "connect",
-                "dpop_key": self._connect.private_key_pem,
+                CONF_NAME: "T3 Connect",
+                "connection_type": "connect_multi",
+                "environments": connected,
                 "cloud_refresh_token": self._cloud_tokens.get("refresh_token", ""),
             },
         )
@@ -243,10 +284,40 @@ class T3CodeOptionsFlow(OptionsFlow):
         errors: dict[str, str] = {}
         diagnostic = ""
         if user_input is not None:
-            base_url = self.config_entry.data[CONF_BASE_URL]
+            base_url = self.config_entry.data.get(CONF_BASE_URL, "")
             session = async_get_clientsession(self.hass)
             try:
-                if self.config_entry.data.get("connection_type") == "connect":
+                if self.config_entry.data.get("connection_type") == "connect_multi":
+                    saved_refresh = self.config_entry.options.get(
+                        "cloud_refresh_token",
+                        self.config_entry.data.get("cloud_refresh_token", ""),
+                    )
+                    refresh_client = T3Connect(
+                        session,
+                        self.config_entry.data["environments"][0]["dpop_key"],
+                    )
+                    refreshed = await refresh_client.refresh_cloud_session(saved_refresh)
+                    environments = []
+                    for environment in self.config_entry.options.get(
+                        "environments", self.config_entry.data["environments"]
+                    ):
+                        connect = T3Connect(session, environment["dpop_key"])
+                        endpoint, token = await connect.connect_environment(
+                            refreshed["access_token"], environment["environment_id"]
+                        )
+                        if endpoint != environment["base_url"]:
+                            raise T3ClientError(
+                                "T3 Connect returned a changed environment endpoint; reconfigure the integration"
+                            )
+                        await T3Client(session, endpoint, token, connect).shell_snapshot()
+                        environments.append({**environment, "token": token})
+                    options = {
+                        "environments": environments,
+                        "cloud_refresh_token": refreshed.get(
+                            "refresh_token", saved_refresh
+                        ),
+                    }
+                elif self.config_entry.data.get("connection_type") == "connect":
                     connect = T3Connect(session, self.config_entry.data["dpop_key"])
                     saved_refresh = self.config_entry.options.get(
                         "cloud_refresh_token",
@@ -285,7 +356,8 @@ class T3CodeOptionsFlow(OptionsFlow):
 
         schema = (
             vol.Schema({})
-            if self.config_entry.data.get("connection_type") == "connect"
+            if self.config_entry.data.get("connection_type")
+            in {"connect", "connect_multi"}
             else vol.Schema(
                 {
                     vol.Required(CONF_TOKEN): selector.TextSelector(

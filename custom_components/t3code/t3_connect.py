@@ -92,6 +92,25 @@ class T3Connect:
             self.key, {"typ": "dpop+jwt", "alg": "ES256", "jwk": self.jwk}, payload
         )
 
+    @staticmethod
+    async def _check_response(response: Any, action: str) -> None:
+        """Raise a safe API diagnostic, retaining only documented error fields."""
+        if response.status < 400:
+            return
+        try:
+            payload = await response.json(content_type=None)
+        except (ValueError, ClientError):
+            payload = {}
+        code = payload.get("code") if isinstance(payload, dict) else None
+        reason = payload.get("reason") if isinstance(payload, dict) else None
+        details = ", ".join(
+            f"{label}={value}"
+            for label, value in (("code", code), ("reason", reason))
+            if isinstance(value, str) and value.replace("_", "").isalnum()
+        )
+        suffix = f" ({details})" if details else ""
+        raise T3ClientError(f"{action}: server returned HTTP {response.status}{suffix}.")
+
     async def begin_device_authorization(self) -> dict[str, Any]:
         url = f"{CLERK_FRONTEND}/oauth/device_authorization"
         try:
@@ -209,7 +228,7 @@ class T3Connect:
                     "client_id": "t3-web",
                 },
             ) as response:
-                response.raise_for_status()
+                await self._check_response(response, "T3 Connect relay token exchange")
                 relay_token = await response.json()
             connect_url = f"{RELAY_URL}/v1/environments/{environment_id}/connect"
             dpop = self._proof("POST", connect_url, relay_token["access_token"])
@@ -219,9 +238,9 @@ class T3Connect:
                     "Authorization": f"DPoP {relay_token['access_token']}",
                     "DPoP": dpop,
                 },
-                json={"clientProofKeyThumbprint": self.thumbprint},
+                json={"clientKeyThumbprint": self.thumbprint},
             ) as response:
-                response.raise_for_status()
+                await self._check_response(response, "T3 Connect relay environment connection")
                 result = await response.json()
         except (ClientError, asyncio.TimeoutError, ValueError, KeyError) as err:
             raise _request_failure("T3 Connect environment connection", err) from err

@@ -9,7 +9,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import CONF_BASE_URL, CONF_TOKEN, PLATFORMS
-from .coordinator import T3CodeCoordinator
+from .coordinator import T3CodeCoordinator, T3CodeMultiCoordinator
 from .metrics import shell_metrics
 from .t3_client import T3Client, T3ClientError
 from .t3_connect import T3Connect
@@ -20,6 +20,35 @@ type T3CodeConfigEntry = ConfigEntry[T3CodeCoordinator]
 async def async_setup_entry(hass: HomeAssistant, entry: T3CodeConfigEntry) -> bool:
     """Set up a T3 Code environment entry."""
     session = async_get_clientsession(hass)
+    if entry.data.get("connection_type") == "connect_multi":
+        environments = entry.options.get("environments", entry.data["environments"])
+        clients = {
+            environment["environment_id"]: (
+                environment["name"],
+                T3Client(
+                    session,
+                    environment["base_url"],
+                    environment["token"],
+                    T3Connect(session, environment["dpop_key"]),
+                ),
+            )
+            for environment in environments
+        }
+        coordinator = T3CodeMultiCoordinator(
+            hass, clients, entry.data.get(CONF_NAME, entry.title), entry.entry_id
+        )
+        try:
+            await coordinator.async_initialize()
+        except T3ClientError as err:
+            raise ConfigEntryNotReady(
+                "Could not connect to any selected T3 Code environments"
+            ) from err
+        entry.runtime_data = coordinator
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        coordinator.start()
+        entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+        return True
+
     dpop = (
         T3Connect(session, entry.data["dpop_key"])
         if entry.data.get("connection_type") == "connect"

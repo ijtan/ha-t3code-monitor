@@ -33,3 +33,15 @@ def shell_metrics(threads: dict[str, dict[str, Any]]) -> dict[str, int]:
         ),
         "threads": len(threads),
     }
+
+
+def combine_shell_metrics(
+    metrics_by_environment: list[dict[str, int]],
+) -> dict[str, int]:
+    """Sum the same shell counters across selected environments."""
+    if not metrics_by_environment:
+        return shell_metrics({})
+    return {
+        key: sum(metrics.get(key, 0) for metrics in metrics_by_environment)
+        for key in metrics_by_environment[0]
+    }
