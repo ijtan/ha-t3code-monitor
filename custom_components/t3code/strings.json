@@ -1,12 +1,15 @@
 {
   "config": {
+    "progress": {
+      "wait_for_authorization": "Waiting for T3 Connect approval"
+    },
     "step": {
       "user": {
         "title": "Connect to T3 Code Monitor",
-        "description": "Choose a direct environment connection or sign in through T3 Connect.",
-        "data": {
-          "name": "Name",
-          "connection_type": "Connection method"
+        "description": "Choose how Home Assistant should connect to the T3 Code environment.",
+        "menu_options": {
+          "direct": "Direct environment URL",
+          "connect": "T3 Connect account"
         }
       },
       "direct": {

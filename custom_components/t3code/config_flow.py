@@ -48,32 +48,16 @@ class T3CodeConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        if user_input is not None and CONF_BASE_URL in user_input:
-            if user_input["connection_type"] == "connect":
-                self._connect_name = user_input[CONF_NAME].strip()
-                return await self.async_step_connect()
-            return await self.async_step_direct(
-                {CONF_NAME: user_input[CONF_NAME].strip()}
-            )
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_NAME, default="T3 Code Monitor"): str,
-                vol.Required("connection_type", default="direct"): vol.In(
-                    {
-                        "direct": "Direct environment URL",
-                        "connect": "T3 Connect account",
-                    }
-                ),
-            }
+        return self.async_show_menu(
+            step_id="user", menu_options=["direct", "connect"]
         )
-        return self.async_show_form(step_id="user", data_schema=schema)
 
     async def async_step_direct(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         diagnostic = ""
-        if user_input is not None:
+        if user_input is not None and CONF_BASE_URL in user_input:
             base_url = user_input[CONF_BASE_URL].strip().rstrip("/")
             try:
                 parsed = urlsplit(base_url)
@@ -149,18 +133,15 @@ class T3CodeConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Begin T3 Connect OAuth device authorization."""
-        if user_input is None:
-            try:
-                self._connect = T3Connect(async_get_clientsession(self.hass))
-                self._device = await self._connect.begin_device_authorization()
-            except T3ClientError as err:
-                _LOGGER.warning("Could not start T3 Connect authorization: %s", err)
-                return self.async_abort(reason="cannot_connect")
-        elif user_input.get("authorized"):
-            try:
-                self._cloud_tokens = await self._connect.poll_device_authorization(
-                    self._device
+        if hasattr(self, "_oauth_task"):
+            if not self._oauth_task.done():
+                return self.async_show_progress(
+                    step_id="connect",
+                    progress_action="wait_for_authorization",
+                    progress_task=self._oauth_task,
                 )
+            try:
+                self._cloud_tokens = self._oauth_task.result()
                 records = await self._connect.list_environments(
                     self._cloud_tokens["access_token"]
                 )
@@ -177,16 +158,29 @@ class T3CodeConfigFlow(ConfigFlow, domain=DOMAIN):
                 and item.get("environmentId")
                 and item.get("label")
             }
-            return self.async_show_form(
-                step_id="connect_environment",
-                data_schema=vol.Schema(
-                    {vol.Required("environment_id"): vol.In(choices)}
-                ),
+            self._environment_choices = choices
+            return self.async_show_progress_done(next_step_id="connect_environment")
+        if not hasattr(self, "_device"):
+            try:
+                self._connect_name = "T3 Code Monitor"
+                self._connect = T3Connect(async_get_clientsession(self.hass))
+                self._device = await self._connect.begin_device_authorization()
+            except T3ClientError as err:
+                _LOGGER.warning("Could not start T3 Connect authorization: %s", err)
+                return self.async_abort(reason="cannot_connect")
+        if user_input is not None:
+            self._oauth_task = self.hass.async_create_task(
+                self._connect.poll_device_authorization(self._device)
+            )
+            return self.async_show_progress(
+                step_id="connect",
+                progress_action="wait_for_authorization",
+                progress_task=self._oauth_task,
             )
         device = self._device
         return self.async_show_form(
             step_id="connect",
-            data_schema=vol.Schema({vol.Required("authorized", default=False): bool}),
+            data_schema=vol.Schema({}),
             description_placeholders={
                 "verification_uri": device.get("verification_uri_complete")
                 or device["verification_uri"],
@@ -195,9 +189,16 @@ class T3CodeConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_connect_environment(
-        self, user_input: dict[str, Any]
+        self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Mint an environment credential and exchange it for read-only access."""
+        if user_input is None:
+            return self.async_show_form(
+                step_id="connect_environment",
+                data_schema=vol.Schema(
+                    {vol.Required("environment_id"): vol.In(self._environment_choices)}
+                ),
+            )
         environment_id = user_input["environment_id"]
         record = next(
             item
