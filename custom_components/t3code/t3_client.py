@@ -8,13 +8,48 @@ from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
-from aiohttp import ClientError, ClientSession, WSMsgType
+from aiohttp import (
+    ClientConnectorError,
+    ClientError,
+    ClientResponseError,
+    ClientSession,
+    ClientSSLError,
+    ContentTypeError,
+    InvalidURL,
+    WSMsgType,
+)
 
 from .const import RPC_SUBSCRIBE_SHELL
 
 
 class T3ClientError(Exception):
-    """T3 environment could not be reached or returned an invalid response."""
+    """T3 environment request failed with a safe, user-facing diagnostic."""
+
+
+def _request_failure(action: str, err: Exception) -> T3ClientError:
+    """Describe common failures without exposing request data or credentials."""
+    if isinstance(err, asyncio.TimeoutError):
+        detail = "The request timed out."
+    elif isinstance(err, ContentTypeError):
+        detail = "The server did not return JSON. Check the T3 environment URL."
+    elif isinstance(err, ClientResponseError):
+        detail = f"The server returned HTTP {err.status}."
+    elif isinstance(err, ClientSSLError):
+        detail = "The HTTPS certificate or TLS handshake failed."
+    elif isinstance(err, ClientConnectorError):
+        reason = getattr(err.os_error, "strerror", None)
+        detail = (
+            f"The network connection failed: {reason}."
+            if reason
+            else "The network connection failed."
+        )
+    elif isinstance(err, InvalidURL):
+        detail = "The URL is invalid."
+    elif isinstance(err, ValueError):
+        detail = "The server returned invalid JSON."
+    else:
+        detail = f"The request failed ({type(err).__name__})."
+    return T3ClientError(f"{action}: {detail}")
 
 
 class T3Client:
@@ -50,14 +85,15 @@ class T3Client:
             ) as response:
                 if response.status in (400, 401, 403):
                     raise T3ClientError(
-                        "T3 Code rejected the pairing credential or read-only scope"
+                        f"Pairing credential exchange was rejected (HTTP {response.status}). "
+                        "It may be expired, already used, or not authorized for orchestration:read."
                     )
                 response.raise_for_status()
                 payload = await response.json()
         except T3ClientError:
             raise
         except (ClientError, asyncio.TimeoutError, ValueError) as err:
-            raise T3ClientError("Could not exchange the T3 Code pairing credential") from err
+            raise _request_failure("Pairing credential exchange", err) from err
         token = payload.get("access_token") if isinstance(payload, dict) else None
         granted_scope = payload.get("scope", "") if isinstance(payload, dict) else ""
         if not isinstance(token, str) or not token or granted_scope != "orchestration:read":
@@ -75,7 +111,7 @@ class T3Client:
                 response.raise_for_status()
                 payload = await response.json()
         except (ClientError, asyncio.TimeoutError, ValueError) as err:
-            raise T3ClientError("Could not read the T3 Code environment descriptor") from err
+            raise _request_failure("Environment descriptor request", err) from err
         environment_id = payload.get("environmentId") if isinstance(payload, dict) else None
         if not isinstance(environment_id, str) or not environment_id:
             raise T3ClientError("T3 Code returned an invalid environment descriptor")
@@ -94,7 +130,7 @@ class T3Client:
         except T3ClientError:
             raise
         except (ClientError, asyncio.TimeoutError, ValueError) as err:
-            raise T3ClientError("Could not read T3 Code shell snapshot") from err
+            raise _request_failure("Shell snapshot request", err) from err
         if not isinstance(payload, dict) or not isinstance(payload.get("threads"), list):
             raise T3ClientError("T3 Code returned an invalid shell snapshot")
         return payload
@@ -111,7 +147,7 @@ class T3Client:
         except T3ClientError:
             raise
         except (ClientError, asyncio.TimeoutError, ValueError) as err:
-            raise T3ClientError("Could not obtain a T3 Code WebSocket ticket") from err
+            raise _request_failure("WebSocket ticket request", err) from err
         ticket = payload.get("ticket") if isinstance(payload, dict) else None
         if not isinstance(ticket, str) or not ticket:
             raise T3ClientError("T3 Code returned an invalid WebSocket ticket")
@@ -179,4 +215,4 @@ class T3Client:
         except T3ClientError:
             raise
         except (ClientError, asyncio.TimeoutError, OSError) as err:
-            raise T3ClientError("Could not connect to the T3 Code shell stream") from err
+            raise _request_failure("Shell WebSocket connection", err) from err

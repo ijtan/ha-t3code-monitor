@@ -12,7 +12,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install pytest
+      - run: python -m pip install pytest aiohttp
       - run: python -m compileall -q custom_components/t3code tests
       - run: python -m pytest -q
 

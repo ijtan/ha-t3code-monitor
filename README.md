@@ -45,6 +45,10 @@ Each environment creates count sensors for `starting`, `running`, `ready`, `idle
 - Reconnect snapshots reconcile current state and do not replay missed transitions.
 - Usage, cost, quota, and HA events are not included in this MVP.
 
+## Connection troubleshooting
+
+The setup form shows the latest connection diagnostic, and Home Assistant logs a warning under `custom_components.t3code.config_flow`. The URL must be the T3 environment's API origin, such as `http://192.168.1.20:3773` or the direct environment hostname provided by T3 Connect. Do not enter `app.t3.codes`, a T3 account page, or a `/pair` URL. Also confirm the HA host itself can resolve and reach that address. Diagnostics intentionally omit credentials, URL paths, and query strings. If setup still fails, share the warning line and the HTTP status or network error, but never share the pairing credential or access token.
+
 ## License
 
 This project is licensed under **GNU GPL version 3 only**. See [LICENSE](LICENSE).
