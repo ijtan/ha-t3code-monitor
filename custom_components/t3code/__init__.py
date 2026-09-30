@@ -12,16 +12,24 @@ from .const import CONF_BASE_URL, CONF_TOKEN, PLATFORMS
 from .coordinator import T3CodeCoordinator
 from .metrics import shell_metrics
 from .t3_client import T3Client, T3ClientError
+from .t3_connect import T3Connect
 
 type T3CodeConfigEntry = ConfigEntry[T3CodeCoordinator]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: T3CodeConfigEntry) -> bool:
     """Set up a T3 Code environment entry."""
+    session = async_get_clientsession(hass)
+    dpop = (
+        T3Connect(session, entry.data["dpop_key"])
+        if entry.data.get("connection_type") == "connect"
+        else None
+    )
     client = T3Client(
-        async_get_clientsession(hass),
+        session,
         entry.data[CONF_BASE_URL],
         entry.options.get(CONF_TOKEN, entry.data[CONF_TOKEN]),
+        dpop,
     )
     coordinator = T3CodeCoordinator(
         hass,

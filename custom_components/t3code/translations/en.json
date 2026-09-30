@@ -3,28 +3,49 @@
     "step": {
       "user": {
         "title": "Connect to T3 Code Monitor",
+        "description": "Choose a direct environment connection or sign in through T3 Connect.",
+        "data": {
+          "name": "Name",
+          "connection_type": "Connection method"
+        }
+      },
+      "direct": {
+        "title": "Connect directly to T3 Code",
         "description": "Enter the environment API base URL, not the T3 web app URL or a /pair page, and a one-time pairing credential. {diagnostic}",
         "data": {
           "name": "Name",
           "base_url": "Environment base URL",
           "token": "One-time pairing credential"
         }
+      },
+      "connect": {
+        "title": "Authorize T3 Connect",
+        "description": "Open {verification_uri} and enter code {user_code}. After approving T3 Code Monitor, submit to continue.",
+        "data": {"authorized": "I approved access in my browser"}
+      },
+      "connect_environment": {
+        "title": "Choose a T3 Code environment",
+        "description": "Select an environment already linked to your T3 Connect account.",
+        "data": {"environment_id": "Environment"}
       }
     },
     "error": {
       "invalid_url": "Enter an HTTP or HTTPS base URL.",
       "cannot_connect": "Could not connect to the T3 Code environment. Check the URL and network access.",
+      "no_environments": "No T3 Code environments are linked to this T3 Connect account.",
       "invalid_pairing_credential": "The pairing credential was rejected, expired, or could not be exchanged for orchestration:read. Create a new pairing credential and try again."
     },
     "abort": {
-      "already_configured": "This T3 Code environment is already configured."
+      "already_configured": "This T3 Code environment is already configured.",
+      "cannot_connect": "Could not complete T3 Connect. Check the Home Assistant logs for a safe diagnostic.",
+      "no_environments": "No T3 Code environments are linked to this T3 Connect account."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Renew T3 Code Monitor connection",
-        "description": "Create a new one-time pairing credential on the T3 host and exchange it for a fresh read-only session. {diagnostic}",
+        "description": "Direct connections: enter a fresh one-time pairing credential. T3 Connect connections: submit to renew using the saved account authorization. {diagnostic}",
         "data": {
           "token": "One-time pairing credential"
         }

@@ -55,10 +55,13 @@ def _request_failure(action: str, err: Exception) -> T3ClientError:
 class T3Client:
     """Read T3 shell state using its authenticated environment endpoints."""
 
-    def __init__(self, session: ClientSession, base_url: str, token: str) -> None:
+    def __init__(
+        self, session: ClientSession, base_url: str, token: str, dpop: Any = None
+    ) -> None:
         self._session = session
         self._base_url = base_url.rstrip("/")
         self._token = token
+        self._dpop = dpop
         parts = urlsplit(self._base_url)
         ws_scheme = "wss" if parts.scheme == "https" else "ws"
         self._ws_base = urlunsplit((ws_scheme, parts.netloc, "/ws", "", ""))
@@ -96,23 +99,37 @@ class T3Client:
             raise _request_failure("Pairing credential exchange", err) from err
         token = payload.get("access_token") if isinstance(payload, dict) else None
         granted_scope = payload.get("scope", "") if isinstance(payload, dict) else ""
-        if not isinstance(token, str) or not token or granted_scope != "orchestration:read":
+        if (
+            not isinstance(token, str)
+            or not token
+            or granted_scope != "orchestration:read"
+        ):
             raise T3ClientError("T3 Code did not issue the requested read-only session")
         return token
 
     @property
     def headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._token}"}
+        return {"Authorization": f"{'DPoP' if self._dpop else 'Bearer'} {self._token}"}
+
+    def _auth_headers(self, method: str, url: str) -> dict[str, str]:
+        headers = self.headers
+        if self._dpop:
+            headers["DPoP"] = self._dpop._proof(method, url, self._token)
+        return headers
 
     async def environment_id(self) -> str:
         """Read the public environment descriptor to deduplicate alternate routes."""
         try:
-            async with self._session.get(f"{self._base_url}/.well-known/t3/environment") as response:
+            async with self._session.get(
+                f"{self._base_url}/.well-known/t3/environment"
+            ) as response:
                 response.raise_for_status()
                 payload = await response.json()
         except (ClientError, asyncio.TimeoutError, ValueError) as err:
             raise _request_failure("Environment descriptor request", err) from err
-        environment_id = payload.get("environmentId") if isinstance(payload, dict) else None
+        environment_id = (
+            payload.get("environmentId") if isinstance(payload, dict) else None
+        )
         if not isinstance(environment_id, str) or not environment_id:
             raise T3ClientError("T3 Code returned an invalid environment descriptor")
         return environment_id
@@ -120,25 +137,31 @@ class T3Client:
     async def shell_snapshot(self) -> dict[str, Any]:
         """Fetch a baseline snapshot over authenticated HTTP."""
         try:
+            url = f"{self._base_url}/api/orchestration/shell"
             async with self._session.get(
-                f"{self._base_url}/api/orchestration/shell", headers=self.headers
+                url, headers=self._auth_headers("GET", url)
             ) as response:
                 if response.status in (401, 403):
-                    raise T3ClientError("T3 Code rejected the environment token or read scope")
+                    raise T3ClientError(
+                        "T3 Code rejected the environment token or read scope"
+                    )
                 response.raise_for_status()
                 payload = await response.json()
         except T3ClientError:
             raise
         except (ClientError, asyncio.TimeoutError, ValueError) as err:
             raise _request_failure("Shell snapshot request", err) from err
-        if not isinstance(payload, dict) or not isinstance(payload.get("threads"), list):
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("threads"), list
+        ):
             raise T3ClientError("T3 Code returned an invalid shell snapshot")
         return payload
 
     async def _websocket_ticket(self) -> str:
         try:
+            url = f"{self._base_url}/api/auth/websocket-ticket"
             async with self._session.post(
-                f"{self._base_url}/api/auth/websocket-ticket", headers=self.headers
+                url, headers=self._auth_headers("POST", url)
             ) as response:
                 if response.status in (401, 403):
                     raise T3ClientError("T3 Code rejected the environment token")
@@ -153,12 +176,20 @@ class T3Client:
             raise T3ClientError("T3 Code returned an invalid WebSocket ticket")
         return ticket
 
-    async def subscribe_shell(self, after_sequence: int) -> AsyncIterator[dict[str, Any]]:
+    async def subscribe_shell(
+        self, after_sequence: int
+    ) -> AsyncIterator[dict[str, Any]]:
         """Subscribe to shell updates, acknowledging each Effect RPC stream chunk."""
         ticket = await self._websocket_ticket()
         parts = urlsplit(self._ws_base)
         ws_url = urlunsplit(
-            (parts.scheme, parts.netloc, parts.path, urlencode({"wsTicket": ticket}), "")
+            (
+                parts.scheme,
+                parts.netloc,
+                parts.path,
+                urlencode({"wsTicket": ticket}),
+                "",
+            )
         )
         request_id = 1
         try:
@@ -177,7 +208,9 @@ class T3Client:
                         try:
                             decoded = json.loads(message.data)
                         except json.JSONDecodeError as err:
-                            raise T3ClientError("T3 Code sent invalid WebSocket JSON") from err
+                            raise T3ClientError(
+                                "T3 Code sent invalid WebSocket JSON"
+                            ) from err
                         frames = decoded if isinstance(decoded, list) else [decoded]
                         for frame in frames:
                             if not isinstance(frame, dict):
@@ -201,14 +234,17 @@ class T3Client:
                                         "params": {"requestId": str(request_id)},
                                     }
                                 )
-                            elif (
-                                frame.get("id") == request_id
-                                and "chunk" not in frame
-                            ):
+                            elif frame.get("id") == request_id and "chunk" not in frame:
                                 if frame.get("error"):
-                                    raise T3ClientError("T3 Code shell subscription failed")
+                                    raise T3ClientError(
+                                        "T3 Code shell subscription failed"
+                                    )
                                 return
-                    elif message.type in (WSMsgType.CLOSED, WSMsgType.CLOSE, WSMsgType.CLOSING):
+                    elif message.type in (
+                        WSMsgType.CLOSED,
+                        WSMsgType.CLOSE,
+                        WSMsgType.CLOSING,
+                    ):
                         break
                     elif message.type == WSMsgType.ERROR:
                         raise T3ClientError("T3 Code WebSocket connection failed")

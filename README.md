@@ -49,6 +49,10 @@ Each environment creates count sensors for `starting`, `running`, `ready`, `idle
 
 The setup form shows the latest connection diagnostic, and Home Assistant logs a warning under `custom_components.t3code.config_flow`. The URL must be the T3 environment's API origin, such as `http://192.168.1.20:3773` or the direct environment hostname provided by T3 Connect. Do not enter `app.t3.codes`, a T3 account page, or a `/pair` URL. Also confirm the HA host itself can resolve and reach that address. Diagnostics intentionally omit credentials, URL paths, and query strings. If setup still fails, share the warning line and the HTTP status or network error, but never share the pairing credential or access token.
 
+### T3 Connect account setup
+
+Choose **T3 Connect account** during setup to authorize Home Assistant with T3's OAuth device flow, select an environment already linked to the account, and connect through its managed relay endpoint. Home Assistant stores the refresh credential and a per-entry DPoP proof key so the connection can be renewed from the integration's **Configure** action. This uses the production T3 Connect client configuration and is intended for T3's production relay. It does not create environment links or change T3 settings.
+
 ## License
 
 This project is licensed under **GNU GPL version 3 only**. See [LICENSE](LICENSE).

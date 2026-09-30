@@ -15,6 +15,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import CONF_BASE_URL, CONF_TOKEN, DOMAIN
 from .t3_client import T3Client, T3ClientError
+from .t3_connect import T3Connect
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,6 +46,29 @@ class T3CodeConfigFlow(ConfigFlow, domain=DOMAIN):
         return T3CodeOptionsFlow()
 
     async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if user_input is not None and CONF_BASE_URL in user_input:
+            if user_input["connection_type"] == "connect":
+                self._connect_name = user_input[CONF_NAME].strip()
+                return await self.async_step_connect()
+            return await self.async_step_direct(
+                {CONF_NAME: user_input[CONF_NAME].strip()}
+            )
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_NAME, default="T3 Code Monitor"): str,
+                vol.Required("connection_type", default="direct"): vol.In(
+                    {
+                        "direct": "Direct environment URL",
+                        "connect": "T3 Connect account",
+                    }
+                ),
+            }
+        )
+        return self.async_show_form(step_id="user", data_schema=schema)
+
+    async def async_step_direct(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
@@ -102,7 +126,12 @@ class T3CodeConfigFlow(ConfigFlow, domain=DOMAIN):
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_NAME, default="T3 Code Monitor"): str,
+                vol.Required(
+                    CONF_NAME,
+                    default=user_input.get(CONF_NAME, "T3 Code Monitor")
+                    if user_input
+                    else "T3 Code Monitor",
+                ): str,
                 vol.Required(CONF_BASE_URL): str,
                 vol.Required(CONF_TOKEN): selector.TextSelector(
                     selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
@@ -110,10 +139,97 @@ class T3CodeConfigFlow(ConfigFlow, domain=DOMAIN):
             }
         )
         return self.async_show_form(
-            step_id="user",
+            step_id="direct",
             data_schema=schema,
             errors=errors,
             description_placeholders={"diagnostic": diagnostic},
+        )
+
+    async def async_step_connect(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Begin T3 Connect OAuth device authorization."""
+        if user_input is None:
+            try:
+                self._connect = T3Connect(async_get_clientsession(self.hass))
+                self._device = await self._connect.begin_device_authorization()
+            except T3ClientError as err:
+                _LOGGER.warning("Could not start T3 Connect authorization: %s", err)
+                return self.async_abort(reason="cannot_connect")
+        elif user_input.get("authorized"):
+            try:
+                self._cloud_tokens = await self._connect.poll_device_authorization(
+                    self._device
+                )
+                records = await self._connect.list_environments(
+                    self._cloud_tokens["access_token"]
+                )
+            except T3ClientError as err:
+                _LOGGER.warning("T3 Connect authorization failed: %s", err)
+                return self.async_abort(reason="cannot_connect")
+            if not records:
+                return self.async_abort(reason="no_environments")
+            self._environment_records = records
+            choices = {
+                item["environmentId"]: f"{item['label']} ({item['environmentId']})"
+                for item in records
+                if isinstance(item, dict)
+                and item.get("environmentId")
+                and item.get("label")
+            }
+            return self.async_show_form(
+                step_id="connect_environment",
+                data_schema=vol.Schema(
+                    {vol.Required("environment_id"): vol.In(choices)}
+                ),
+            )
+        device = self._device
+        return self.async_show_form(
+            step_id="connect",
+            data_schema=vol.Schema({vol.Required("authorized", default=False): bool}),
+            description_placeholders={
+                "verification_uri": device.get("verification_uri_complete")
+                or device["verification_uri"],
+                "user_code": device["user_code"],
+            },
+        )
+
+    async def async_step_connect_environment(
+        self, user_input: dict[str, Any]
+    ) -> ConfigFlowResult:
+        """Mint an environment credential and exchange it for read-only access."""
+        environment_id = user_input["environment_id"]
+        record = next(
+            item
+            for item in self._environment_records
+            if item["environmentId"] == environment_id
+        )
+        try:
+            endpoint, token = await self._connect.connect_environment(
+                self._cloud_tokens["access_token"], environment_id
+            )
+            client = T3Client(
+                async_get_clientsession(self.hass), endpoint, token, self._connect
+            )
+            await client.shell_snapshot()
+        except T3ClientError as err:
+            _LOGGER.warning(
+                "Could not connect to selected T3 Connect environment: %s", err
+            )
+            return self.async_abort(reason="cannot_connect")
+        await self.async_set_unique_id(environment_id)
+        self._abort_if_unique_id_configured()
+        return self.async_create_entry(
+            title=record["label"],
+            data={
+                CONF_BASE_URL: endpoint,
+                CONF_TOKEN: token,
+                CONF_NAME: self._connect_name,
+                "environment_id": environment_id,
+                "connection_type": "connect",
+                "dpop_key": self._connect.private_key_pem,
+                "cloud_refresh_token": self._cloud_tokens.get("refresh_token", ""),
+            },
         )
 
 
@@ -129,10 +245,32 @@ class T3CodeOptionsFlow(OptionsFlow):
             base_url = self.config_entry.data[CONF_BASE_URL]
             session = async_get_clientsession(self.hass)
             try:
-                access_token = await T3Client.exchange_pairing_credential(
-                    session, base_url, user_input[CONF_TOKEN]
-                )
-                await T3Client(session, base_url, access_token).shell_snapshot()
+                if self.config_entry.data.get("connection_type") == "connect":
+                    connect = T3Connect(session, self.config_entry.data["dpop_key"])
+                    saved_refresh = self.config_entry.options.get(
+                        "cloud_refresh_token",
+                        self.config_entry.data.get("cloud_refresh_token", ""),
+                    )
+                    refreshed = await connect.refresh_cloud_session(saved_refresh)
+                    endpoint, access_token = await connect.connect_environment(
+                        refreshed["access_token"],
+                        self.config_entry.data["environment_id"],
+                    )
+                    if endpoint != base_url:
+                        raise T3ClientError(
+                            "T3 Connect returned a changed environment endpoint; reconfigure the integration"
+                        )
+                    await T3Client(session, endpoint, access_token, connect).shell_snapshot()
+                    options = {
+                        CONF_TOKEN: access_token,
+                        "cloud_refresh_token": refreshed.get("refresh_token", saved_refresh),
+                    }
+                else:
+                    access_token = await T3Client.exchange_pairing_credential(
+                        session, base_url, user_input[CONF_TOKEN]
+                    )
+                    await T3Client(session, base_url, access_token).shell_snapshot()
+                    options = {CONF_TOKEN: access_token}
             except T3ClientError as err:
                 errors["base"] = "invalid_pairing_credential"
                 diagnostic = str(err)
@@ -142,14 +280,20 @@ class T3CodeOptionsFlow(OptionsFlow):
                     diagnostic,
                 )
             else:
-                return self.async_create_entry(title="", data={CONF_TOKEN: access_token})
+                return self.async_create_entry(title="", data=options)
 
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_TOKEN): selector.TextSelector(
-                    selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
-                ),
-            }
+        schema = (
+            vol.Schema({})
+            if self.config_entry.data.get("connection_type") == "connect"
+            else vol.Schema(
+                {
+                    vol.Required(CONF_TOKEN): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.PASSWORD
+                        )
+                    ),
+                }
+            )
         )
         return self.async_show_form(
             step_id="init",
