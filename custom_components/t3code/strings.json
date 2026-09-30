@@ -1,0 +1,34 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to T3 Code",
+        "description": "Enter the environment URL and a one-time T3 pairing credential. It will be exchanged for an orchestration:read-only session.",
+        "data": {
+          "name": "Environment name",
+          "base_url": "Environment base URL",
+          "token": "One-time pairing credential"
+        }
+      }
+    },
+    "options": {
+      "step": {
+        "init": {
+          "title": "Renew T3 Code connection",
+          "description": "Create a new one-time pairing credential on the T3 host and exchange it for a fresh read-only session.",
+          "data": {
+            "token": "One-time pairing credential"
+          }
+        }
+      }
+    },
+    "error": {
+      "invalid_url": "Enter an HTTP or HTTPS base URL.",
+      "cannot_connect": "Could not connect to the T3 Code environment. Check the URL and network access.",
+      "invalid_pairing_credential": "The pairing credential was rejected, expired, or could not be exchanged for orchestration:read. Create a new pairing credential and try again."
+    },
+    "abort": {
+      "already_configured": "This T3 Code environment is already configured."
+    }
+  }
+}

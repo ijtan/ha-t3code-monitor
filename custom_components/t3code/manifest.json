@@ -1,0 +1,12 @@
+{
+  "domain": "t3code",
+  "name": "T3 Code",
+  "codeowners": ["@ijtan"],
+  "config_flow": true,
+  "documentation": "https://github.com/ijtan/ha-t3code",
+  "integration_type": "service",
+  "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/ijtan/ha-t3code/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}
