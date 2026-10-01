@@ -1,0 +1,40 @@
+"""T3 Effect RPC WebSocket wire-format checks."""
+
+import pytest
+
+from custom_components.t3code.const import RPC_SUBSCRIBE_SHELL
+from custom_components.t3code.errors import T3ClientError
+from custom_components.t3code.t3_client import (
+    _shell_chunk_items,
+    _shell_subscription_request,
+)
+
+
+def test_shell_subscription_uses_effect_rpc_json_envelope() -> None:
+    assert _shell_subscription_request("1", 42) == {
+        "_tag": "Request",
+        "id": "1",
+        "tag": RPC_SUBSCRIBE_SHELL,
+        "payload": {"afterSequence": 42, "requestCompletionMarker": True},
+        "headers": [],
+    }
+
+
+def test_shell_chunk_reads_effect_rpc_values_for_matching_request() -> None:
+    item = {"kind": "thread-upserted", "sequence": 43, "thread": {"id": "t1"}}
+
+    assert _shell_chunk_items(
+        {"_tag": "Chunk", "requestId": "1", "values": [item]}, "1"
+    ) == [item]
+    assert (
+        _shell_chunk_items({"_tag": "Chunk", "requestId": "2", "values": [item]}, "1")
+        is None
+    )
+
+
+def test_shell_chunk_rejects_malformed_values() -> None:
+    with pytest.raises(T3ClientError, match="invalid shell WebSocket event"):
+        _shell_chunk_items(
+            {"_tag": "Chunk", "requestId": "1", "values": ["not-an-event"]},
+            "1",
+        )

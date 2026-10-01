@@ -18,7 +18,9 @@ def shell_metrics(threads: dict[str, dict[str, Any]]) -> dict[str, int]:
     return {
         **{f"session_{status}": sessions[status] for status in SESSION_STATUSES},
         "session_missing": sum(
-            1 for thread in threads.values() if not isinstance(thread.get("session"), dict)
+            1
+            for thread in threads.values()
+            if not isinstance(thread.get("session"), dict)
         ),
         "pending_approvals": sum(
             bool(thread.get("hasPendingApprovals")) for thread in threads.values()

@@ -4,59 +4,64 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
-from aiohttp import (
-    ClientConnectorError,
-    ClientError,
-    ClientResponseError,
-    ClientSession,
-    ClientSSLError,
-    ContentTypeError,
-    InvalidURL,
-    WSMsgType,
-)
+from aiohttp import ClientError, ClientSession, WSMsgType
 
-from .const import RPC_SUBSCRIBE_SHELL
+from .const import ORCHESTRATION_PROTOCOL_VERSION, RPC_SUBSCRIBE_SHELL
+from .errors import T3ClientError, request_failure
+
+_LOGGER = logging.getLogger(__name__)
 
 
-class T3ClientError(Exception):
-    """T3 environment request failed with a safe, user-facing diagnostic."""
+class DpopProofSigner(Protocol):
+    """Minimum DPoP interface required by an environment client."""
+
+    def create_proof(
+        self, method: str, url: str, access_token: str | None = None
+    ) -> str: ...
 
 
-def _request_failure(action: str, err: Exception) -> T3ClientError:
-    """Describe common failures without exposing request data or credentials."""
-    if isinstance(err, asyncio.TimeoutError):
-        detail = "The request timed out."
-    elif isinstance(err, ContentTypeError):
-        detail = "The server did not return JSON. Check the T3 environment URL."
-    elif isinstance(err, ClientResponseError):
-        detail = f"The server returned HTTP {err.status}."
-    elif isinstance(err, ClientSSLError):
-        detail = "The HTTPS certificate or TLS handshake failed."
-    elif isinstance(err, ClientConnectorError):
-        reason = getattr(err.os_error, "strerror", None)
-        detail = (
-            f"The network connection failed: {reason}."
-            if reason
-            else "The network connection failed."
-        )
-    elif isinstance(err, InvalidURL):
-        detail = "The URL is invalid."
-    elif isinstance(err, ValueError):
-        detail = "The server returned invalid JSON."
-    else:
-        detail = f"The request failed ({type(err).__name__})."
-    return T3ClientError(f"{action}: {detail}")
+def _shell_subscription_request(request_id: str, after_sequence: int) -> dict[str, Any]:
+    """Build a request using T3's Effect RPC JSON wire format."""
+    return {
+        "_tag": "Request",
+        "id": request_id,
+        "tag": RPC_SUBSCRIBE_SHELL,
+        "payload": {
+            "afterSequence": after_sequence,
+            "requestCompletionMarker": True,
+        },
+        "headers": [],
+    }
+
+
+def _shell_chunk_items(
+    frame: dict[str, Any], request_id: str
+) -> list[dict[str, Any]] | None:
+    """Decode one matching Effect RPC stream chunk, ignoring unrelated frames."""
+    if frame.get("_tag") != "Chunk" or frame.get("requestId") != request_id:
+        return None
+    values = frame.get("values")
+    if not isinstance(values, list):
+        raise T3ClientError("T3 Code sent an invalid shell WebSocket chunk")
+    if not all(isinstance(item, dict) for item in values):
+        raise T3ClientError("T3 Code sent an invalid shell WebSocket event")
+    return values
 
 
 class T3Client:
     """Read T3 shell state using its authenticated environment endpoints."""
 
     def __init__(
-        self, session: ClientSession, base_url: str, token: str, dpop: Any = None
+        self,
+        session: ClientSession,
+        base_url: str,
+        token: str,
+        dpop: DpopProofSigner | None = None,
     ) -> None:
         self._session = session
         self._base_url = base_url.rstrip("/")
@@ -96,7 +101,7 @@ class T3Client:
         except T3ClientError:
             raise
         except (ClientError, asyncio.TimeoutError, ValueError) as err:
-            raise _request_failure("Pairing credential exchange", err) from err
+            raise request_failure("Pairing credential exchange", err) from err
         token = payload.get("access_token") if isinstance(payload, dict) else None
         granted_scope = payload.get("scope", "") if isinstance(payload, dict) else ""
         if (
@@ -114,7 +119,7 @@ class T3Client:
     def _auth_headers(self, method: str, url: str) -> dict[str, str]:
         headers = self.headers
         if self._dpop:
-            headers["DPoP"] = self._dpop._proof(method, url, self._token)
+            headers["DPoP"] = self._dpop.create_proof(method, url, self._token)
         return headers
 
     async def environment_id(self) -> str:
@@ -126,7 +131,7 @@ class T3Client:
                 response.raise_for_status()
                 payload = await response.json()
         except (ClientError, asyncio.TimeoutError, ValueError) as err:
-            raise _request_failure("Environment descriptor request", err) from err
+            raise request_failure("Environment descriptor request", err) from err
         environment_id = (
             payload.get("environmentId") if isinstance(payload, dict) else None
         )
@@ -150,7 +155,7 @@ class T3Client:
         except T3ClientError:
             raise
         except (ClientError, asyncio.TimeoutError, ValueError) as err:
-            raise _request_failure("Shell snapshot request", err) from err
+            raise request_failure("Shell snapshot request", err) from err
         if not isinstance(payload, dict) or not isinstance(
             payload.get("threads"), list
         ):
@@ -170,7 +175,7 @@ class T3Client:
         except T3ClientError:
             raise
         except (ClientError, asyncio.TimeoutError, ValueError) as err:
-            raise _request_failure("WebSocket ticket request", err) from err
+            raise request_failure("WebSocket ticket request", err) from err
         ticket = payload.get("ticket") if isinstance(payload, dict) else None
         if not isinstance(ticket, str) or not ticket:
             raise T3ClientError("T3 Code returned an invalid WebSocket ticket")
@@ -187,21 +192,21 @@ class T3Client:
                 parts.scheme,
                 parts.netloc,
                 parts.path,
-                urlencode({"wsTicket": ticket}),
+                urlencode(
+                    {
+                        "wsTicket": ticket,
+                        "orchestrationProtocol": str(ORCHESTRATION_PROTOCOL_VERSION),
+                    }
+                ),
                 "",
             )
         )
-        request_id = 1
+        request_id = "1"
         try:
             async with self._session.ws_connect(ws_url, heartbeat=30) as ws:
+                _LOGGER.debug("T3 Code shell WebSocket connected")
                 await ws.send_json(
-                    {
-                        "jsonrpc": "2.0",
-                        "method": RPC_SUBSCRIBE_SHELL,
-                        "params": {"afterSequence": after_sequence},
-                        "id": request_id,
-                        "headers": [],
-                    }
+                    _shell_subscription_request(request_id, after_sequence)
                 )
                 async for message in ws:
                     if message.type == WSMsgType.TEXT:
@@ -215,31 +220,43 @@ class T3Client:
                         for frame in frames:
                             if not isinstance(frame, dict):
                                 continue
-                            if frame.get("method") == "@effect/rpc/Ping":
-                                await ws.send_json(
-                                    {"jsonrpc": "2.0", "method": "@effect/rpc/Pong"}
-                                )
-                            elif (
-                                frame.get("chunk") is True
-                                and frame.get("id") == request_id
-                            ):
-                                values = frame.get("result", [])
-                                for item in values if isinstance(values, list) else []:
-                                    if isinstance(item, dict):
-                                        yield item
+                            message_type = frame.get("_tag")
+                            if message_type == "Ping":
+                                await ws.send_json({"_tag": "Pong"})
+                            elif message_type == "Chunk":
+                                shell_items = _shell_chunk_items(frame, request_id)
+                                if shell_items is None:
+                                    continue
+                                if shell_items:
+                                    _LOGGER.debug(
+                                        "T3 Code shell WebSocket delivered %d update(s)",
+                                        len(shell_items),
+                                    )
+                                for item in shell_items:
+                                    yield item
                                 await ws.send_json(
                                     {
-                                        "jsonrpc": "2.0",
-                                        "method": "@effect/rpc/Ack",
-                                        "params": {"requestId": str(request_id)},
+                                        "_tag": "Ack",
+                                        "requestId": request_id,
                                     }
                                 )
-                            elif frame.get("id") == request_id and "chunk" not in frame:
-                                if frame.get("error"):
+                            elif (
+                                message_type == "Exit"
+                                and frame.get("requestId") == request_id
+                            ):
+                                exit_value = frame.get("exit")
+                                if (
+                                    isinstance(exit_value, dict)
+                                    and exit_value.get("_tag") == "Failure"
+                                ):
                                     raise T3ClientError(
                                         "T3 Code shell subscription failed"
                                     )
                                 return
+                            elif message_type in {"Defect", "ClientProtocolError"}:
+                                raise T3ClientError(
+                                    "T3 Code shell subscription protocol failed"
+                                )
                     elif message.type in (
                         WSMsgType.CLOSED,
                         WSMsgType.CLOSE,
@@ -251,4 +268,4 @@ class T3Client:
         except T3ClientError:
             raise
         except (ClientError, asyncio.TimeoutError, OSError) as err:
-            raise _request_failure("Shell WebSocket connection", err) from err
+            raise request_failure("Shell WebSocket connection", err) from err

@@ -40,8 +40,8 @@ Each environment creates count sensors for `starting`, `running`, `ready`, `idle
 
 ## Limitations
 
-- One-time pairing must currently be created on the T3 host; T3 Connect account OAuth is not included.
-- The stream is a coalesced state projection, not an audit log. Brief intermediate states may not appear.
+- One-time pairing must currently be created on each T3 host; T3 Connect account OAuth is used for environment discovery only.
+- The WebSocket stream is a coalesced state projection, not an audit log. A 30-second snapshot refresh reconciles missed updates; brief intermediate states may not appear.
 - Reconnect snapshots reconcile current state and do not replay missed transitions.
 - Usage, cost, quota, and HA events are not included in this MVP.
 
@@ -51,7 +51,7 @@ The setup form shows the latest connection diagnostic, and Home Assistant logs a
 
 ### T3 Connect account setup
 
-Choose **T3 Connect account** during setup to authorize Home Assistant with T3's OAuth device flow, select one or more environments already linked to the account, and connect through their managed relay endpoints. The aggregate sensors sum counts across the selected environments, and the connection health sensor is on only while every selected environment is reachable. Home Assistant stores the refresh credential and DPoP proof key so connections can be renewed from the integration's **Configure** action. This uses the production T3 Connect client configuration and is intended for T3's production relay. It does not create environment links or change T3 settings.
+Choose **T3 Connect account** during setup to authorize Home Assistant with T3's OAuth device flow and discover environments already linked to the account. Select one or more environments, then create and enter a one-time pairing credential on each selected T3 host. Home Assistant uses the discovered managed endpoint URL to exchange each credential directly for `orchestration:read`; it does not use the relay DPoP connection exchange. The aggregate sensors sum counts across selected environments. Pairing credentials are single-use, and the resulting access tokens can be renewed from the integration's **Configure** action using newly created pairing credentials. This flow does not create environment links or change T3 settings.
 
 ## License
 

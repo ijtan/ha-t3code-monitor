@@ -1,143 +1,194 @@
-"""Read-only T3 Connect client primitives.
-
-The endpoints and OAuth identifiers below are the public production client
-configuration used by T3 Code. OAuth and relay credentials are never logged.
-"""
+"""T3 Connect OAuth, relay access, and environment credential exchange."""
 
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
-import json
 import time
-import uuid
-from typing import Any
-from urllib.parse import urlsplit
+from typing import NotRequired, TypedDict
+from urllib.parse import quote, urlsplit
 
-from aiohttp import ClientError, ClientSession
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+from aiohttp import ClientError, ClientResponse, ClientSession
 
-from .t3_client import T3ClientError, _request_failure
+from .dpop import DpopKey
+from .errors import T3ClientError, request_failure
 
 CLERK_FRONTEND = "https://clerk.t3.codes"
 OAUTH_CLIENT_ID = "hzxSgY2cH10sDU2r"
 RELAY_URL = "https://relay.t3.codes"
-SCOPES = "openid profile email offline_access"
-RELAY_SCOPE = "environment:connect"
-
-
-def _b64(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
-
-
-def _jwt(key: ec.EllipticCurvePrivateKey, header: dict, payload: dict) -> str:
-    content = f"{_b64(json.dumps(header, separators=(',', ':')).encode())}.{_b64(json.dumps(payload, separators=(',', ':')).encode())}"
-    der = key.sign(content.encode(), ec.ECDSA(hashes.SHA256()))
-    r, s = decode_dss_signature(der)
-    return f"{content}.{_b64(r.to_bytes(32, 'big') + s.to_bytes(32, 'big'))}"
-
-
-def _jwk(key: ec.EllipticCurvePrivateKey) -> dict[str, str]:
-    numbers = key.public_key().public_numbers()
-    return {
-        "kty": "EC",
-        "crv": "P-256",
-        "x": _b64(numbers.x.to_bytes(32, "big")),
-        "y": _b64(numbers.y.to_bytes(32, "big")),
+OAUTH_SCOPES = "openid profile email offline_access"
+RELAY_CONNECT_SCOPE = "environment:connect"
+ENVIRONMENT_READ_SCOPE = "orchestration:read"
+_SAFE_RELAY_CODES = frozenset(
+    {
+        "auth_invalid",
+        "environment_connect_not_authorized",
+        "environment_endpoint_unavailable",
+        "environment_link_proof_expired",
+        "environment_link_proof_invalid",
     }
+)
+_SAFE_RELAY_REASONS = frozenset(
+    {
+        "client_proof_key_thumbprint_missing",
+        "database_unavailable",
+        "endpoint_provider_not_managed",
+        "endpoint_request_failed",
+        "endpoint_response_invalid",
+        "environment_link_not_found",
+        "internal_error",
+        "invalid_bearer",
+        "invalid_dpop",
+        "invalid_signature_or_payload",
+        "managed_endpoint_allocation_not_found",
+        "managed_endpoint_allocation_not_ready",
+        "managed_endpoint_base_domain_not_configured",
+        "managed_endpoint_hostname_invalid",
+        "managed_endpoint_mismatch",
+        "missing_bearer",
+        "not_authorized",
+        "persistence_failed",
+        "replayed_nonce",
+        "upstream_unavailable",
+    }
+)
+
+
+class DeviceAuthorization(TypedDict):
+    """Validated response from the OAuth device authorization endpoint."""
+
+    device_code: str
+    user_code: str
+    verification_uri: str
+    expires_in: int
+    interval: NotRequired[int]
+    verification_uri_complete: NotRequired[str]
+
+
+class OAuthTokens(TypedDict):
+    """Account tokens returned by OAuth device or refresh grants."""
+
+    access_token: str
+    refresh_token: NotRequired[str]
+
+
+class EnvironmentRecord(TypedDict):
+    """A T3 environment already linked to the authenticated account."""
+
+    environmentId: str
+    label: str
+    endpoint: EnvironmentEndpoint
+
+
+class EnvironmentEndpoint(TypedDict):
+    """Public HTTP and WebSocket routes advertised by T3 Connect."""
+
+    httpBaseUrl: str
+    wsBaseUrl: str
+
+
+def _json_object(value: object, response_name: str) -> dict[str, object]:
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise T3ClientError(f"T3 Connect returned an invalid {response_name}")
+    return value
+
+
+def _required_string(payload: dict[str, object], key: str, response_name: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        raise T3ClientError(f"T3 Connect returned an invalid {response_name}")
+    return value
+
+
+def _optional_string(payload: dict[str, object], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise T3ClientError("T3 Connect returned an invalid token response")
+    return value
+
+
+def _oauth_tokens(value: object) -> OAuthTokens:
+    payload = _json_object(value, "OAuth token response")
+    tokens: OAuthTokens = {
+        "access_token": _required_string(
+            payload, "access_token", "OAuth token response"
+        )
+    }
+    refresh_token = _optional_string(payload, "refresh_token")
+    if refresh_token is not None:
+        tokens["refresh_token"] = refresh_token
+    return tokens
 
 
 class T3Connect:
-    """T3 Connect device OAuth and relay client."""
+    """Async client for the public T3 Connect device and relay APIs."""
 
     def __init__(
         self, session: ClientSession, private_key_pem: str | None = None
     ) -> None:
-        self.session = session
-        self.key = (
-            serialization.load_pem_private_key(private_key_pem.encode(), password=None)
-            if private_key_pem
-            else ec.generate_private_key(ec.SECP256R1())
-        )
-        if not isinstance(self.key, ec.EllipticCurvePrivateKey):
-            raise T3ClientError("Invalid T3 Connect proof key")
-        self.jwk = _jwk(self.key)
-        self.thumbprint = _b64(
-            hashlib.sha256(
-                json.dumps(self.jwk, sort_keys=True, separators=(",", ":")).encode()
-            ).digest()
+        self._session = session
+        self.dpop_key = (
+            DpopKey.from_pem(private_key_pem)
+            if private_key_pem is not None
+            else DpopKey.generate()
         )
 
     @property
     def private_key_pem(self) -> str:
-        return self.key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.PKCS8,
-            serialization.NoEncryption(),
-        ).decode()
+        """Serialize the proof key for config-entry storage."""
+        return self.dpop_key.private_key_pem
 
-    def _proof(self, method: str, url: str, access_token: str | None = None) -> str:
-        payload: dict[str, Any] = {
-            "htm": method.upper(),
-            "htu": url,
-            "jti": str(uuid.uuid4()),
-            "iat": int(time.time()),
-        }
-        if access_token:
-            payload["ath"] = _b64(hashlib.sha256(access_token.encode()).digest())
-        return _jwt(
-            self.key, {"typ": "dpop+jwt", "alg": "ES256", "jwk": self.jwk}, payload
-        )
-
-    @staticmethod
-    async def _check_response(response: Any, action: str) -> None:
-        """Raise a safe API diagnostic, retaining only documented error fields."""
-        if response.status < 400:
-            return
-        try:
-            payload = await response.json(content_type=None)
-        except (ValueError, ClientError):
-            payload = {}
-        code = payload.get("code") if isinstance(payload, dict) else None
-        reason = payload.get("reason") if isinstance(payload, dict) else None
-        details = ", ".join(
-            f"{label}={value}"
-            for label, value in (("code", code), ("reason", reason))
-            if isinstance(value, str) and value.replace("_", "").isalnum()
-        )
-        suffix = f" ({details})" if details else ""
-        raise T3ClientError(f"{action}: server returned HTTP {response.status}{suffix}.")
-
-    async def begin_device_authorization(self) -> dict[str, Any]:
+    async def begin_device_authorization(self) -> DeviceAuthorization:
+        """Request a user code for the OAuth device authorization flow."""
         url = f"{CLERK_FRONTEND}/oauth/device_authorization"
         try:
-            async with self.session.post(
-                url, data={"client_id": OAUTH_CLIENT_ID, "scope": SCOPES}
+            async with self._session.post(
+                url,
+                data={"client_id": OAUTH_CLIENT_ID, "scope": OAUTH_SCOPES},
             ) as response:
                 response.raise_for_status()
-                data = await response.json()
+                payload = _json_object(await response.json(), "device authorization")
         except (ClientError, asyncio.TimeoutError, ValueError) as err:
-            raise _request_failure("T3 Connect device authorization", err) from err
-        required = ("device_code", "user_code", "verification_uri", "expires_in")
-        if not all(data.get(key) for key in required):
-            raise T3ClientError(
-                "T3 Connect returned an invalid device authorization response"
-            )
-        return data
+            raise request_failure("T3 Connect device authorization", err) from err
+
+        expires_in = payload.get("expires_in")
+        interval = payload.get("interval")
+        if not isinstance(expires_in, int) or expires_in <= 0:
+            raise T3ClientError("T3 Connect returned an invalid device authorization")
+        if interval is not None and (not isinstance(interval, int) or interval <= 0):
+            raise T3ClientError("T3 Connect returned an invalid polling interval")
+
+        authorization: DeviceAuthorization = {
+            "device_code": _required_string(
+                payload, "device_code", "device authorization"
+            ),
+            "user_code": _required_string(payload, "user_code", "device authorization"),
+            "verification_uri": _required_string(
+                payload, "verification_uri", "device authorization"
+            ),
+            "expires_in": expires_in,
+        }
+        verification_uri_complete = _optional_string(
+            payload, "verification_uri_complete"
+        )
+        if verification_uri_complete is not None:
+            authorization["verification_uri_complete"] = verification_uri_complete
+        if interval is not None:
+            authorization["interval"] = interval
+        return authorization
 
     async def poll_device_authorization(
-        self, authorization: dict[str, Any]
-    ) -> dict[str, Any]:
+        self, authorization: DeviceAuthorization
+    ) -> OAuthTokens:
+        """Poll until the user approves, denies, or the device code expires."""
         url = f"{CLERK_FRONTEND}/oauth/token"
-        interval = max(authorization.get("interval", 5), 1)
-        deadline = time.monotonic() + int(authorization["expires_in"])
+        interval = authorization.get("interval", 5)
+        deadline = time.monotonic() + authorization["expires_in"]
         while time.monotonic() < deadline:
             await asyncio.sleep(interval)
             try:
-                async with self.session.post(
+                async with self._session.post(
                     url,
                     data={
                         "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
@@ -145,17 +196,16 @@ class T3Connect:
                         "client_id": OAUTH_CLIENT_ID,
                     },
                 ) as response:
-                    payload = await response.json(content_type=None)
+                    payload = _json_object(
+                        await response.json(content_type=None), "OAuth token response"
+                    )
                     if response.status < 300:
-                        if not payload.get("access_token"):
+                        tokens = _oauth_tokens(payload)
+                        if "refresh_token" not in tokens:
                             raise T3ClientError(
-                                "T3 Connect returned no account access token"
+                                "T3 Connect did not grant offline access needed for renewal"
                             )
-                        if not payload.get("refresh_token"):
-                            raise T3ClientError(
-                                "T3 Connect did not grant offline access needed for session renewal"
-                            )
-                        return payload
+                        return tokens
                     code = payload.get("error")
                     if code == "authorization_pending":
                         continue
@@ -166,18 +216,20 @@ class T3Connect:
                         raise T3ClientError("T3 Connect authorization was denied")
                     if code == "expired_token":
                         break
+                    if isinstance(code, str) and code.replace("_", "").isalnum():
+                        raise T3ClientError(f"T3 Connect authorization failed ({code})")
                     raise T3ClientError(
-                        f"T3 Connect authorization failed ({code or response.status})"
+                        f"T3 Connect authorization failed (HTTP {response.status})"
                     )
             except (ClientError, asyncio.TimeoutError, ValueError) as err:
-                raise _request_failure("T3 Connect authorization polling", err) from err
+                raise request_failure("T3 Connect authorization polling", err) from err
         raise T3ClientError("T3 Connect device code expired. Start setup again.")
 
-    async def refresh_cloud_session(self, refresh_token: str) -> dict[str, Any]:
-        """Renew the Clerk account session using the OAuth refresh token."""
+    async def refresh_cloud_session(self, refresh_token: str) -> OAuthTokens:
+        """Renew the Clerk account session using its OAuth refresh token."""
         url = f"{CLERK_FRONTEND}/oauth/token"
         try:
-            async with self.session.post(
+            async with self._session.post(
                 url,
                 data={
                     "grant_type": "refresh_token",
@@ -188,35 +240,63 @@ class T3Connect:
                 response.raise_for_status()
                 payload = await response.json()
         except (ClientError, asyncio.TimeoutError, ValueError) as err:
-            raise _request_failure("T3 Connect account session renewal", err) from err
-        if not isinstance(payload, dict) or not payload.get("access_token"):
-            raise T3ClientError("T3 Connect did not renew the account session")
-        return payload
+            raise request_failure("T3 Connect account session renewal", err) from err
+        return _oauth_tokens(payload)
 
-    async def list_environments(self, clerk_token: str) -> list[dict[str, Any]]:
+    async def list_environments(self, clerk_token: str) -> list[EnvironmentRecord]:
+        """Return environments linked to the signed-in T3 Connect account."""
         url = f"{RELAY_URL}/v1/environments"
         try:
-            async with self.session.get(
+            async with self._session.get(
                 url, headers={"Authorization": f"Bearer {clerk_token}"}
             ) as response:
                 response.raise_for_status()
-                payload = await response.json()
+                payload = _json_object(await response.json(), "environment list")
         except (ClientError, asyncio.TimeoutError, ValueError) as err:
-            raise _request_failure("T3 Connect environment listing", err) from err
-        records = payload.get("environments") if isinstance(payload, dict) else None
-        if not isinstance(records, list):
+            raise request_failure("T3 Connect environment listing", err) from err
+
+        environments = payload.get("environments")
+        if not isinstance(environments, list):
             raise T3ClientError("T3 Connect returned an invalid environment list")
+        records: list[EnvironmentRecord] = []
+        for value in environments:
+            record = _json_object(value, "environment record")
+            endpoint = _json_object(record.get("endpoint"), "environment endpoint")
+            records.append(
+                {
+                    "environmentId": _required_string(
+                        record, "environmentId", "environment record"
+                    ),
+                    "label": _required_string(record, "label", "environment record"),
+                    "endpoint": {
+                        "httpBaseUrl": _required_string(
+                            endpoint, "httpBaseUrl", "environment endpoint"
+                        ),
+                        "wsBaseUrl": _required_string(
+                            endpoint, "wsBaseUrl", "environment endpoint"
+                        ),
+                    },
+                }
+            )
         return records
 
     async def connect_environment(
         self, clerk_token: str, environment_id: str
     ) -> tuple[str, str]:
-        """Connect through relay and exchange the bound credential for read access."""
-        token_url = f"{RELAY_URL}/v1/client/dpop-token"
-        proof = self._proof("POST", token_url)
+        """Connect through the relay and exchange its credential for read access."""
+        relay_token = await self._exchange_relay_token(clerk_token)
+        endpoint, credential = await self._request_environment_credential(
+            relay_token, environment_id
+        )
+        access_token = await self._exchange_environment_credential(endpoint, credential)
+        return endpoint, access_token
+
+    async def _exchange_relay_token(self, clerk_token: str) -> str:
+        url = f"{RELAY_URL}/v1/client/dpop-token"
+        proof = self.dpop_key.create_proof("POST", url)
         try:
-            async with self.session.post(
-                token_url,
+            async with self._session.post(
+                url,
                 headers={"DPoP": proof},
                 data={
                     "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -224,63 +304,116 @@ class T3Connect:
                     "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
                     "requested_token_type": "urn:ietf:params:oauth:token-type:access_token",
                     "resource": RELAY_URL,
-                    "scope": RELAY_SCOPE,
+                    "scope": RELAY_CONNECT_SCOPE,
                     "client_id": "t3-web",
                 },
             ) as response:
                 await self._check_response(response, "T3 Connect relay token exchange")
-                relay_token = await response.json()
-            connect_url = f"{RELAY_URL}/v1/environments/{environment_id}/connect"
-            dpop = self._proof("POST", connect_url, relay_token["access_token"])
-            async with self.session.post(
-                connect_url,
-                headers={
-                    "Authorization": f"DPoP {relay_token['access_token']}",
-                    "DPoP": dpop,
-                },
-                json={"clientKeyThumbprint": self.thumbprint},
-            ) as response:
-                await self._check_response(response, "T3 Connect relay environment connection")
-                result = await response.json()
-        except (ClientError, asyncio.TimeoutError, ValueError, KeyError) as err:
-            raise _request_failure("T3 Connect environment connection", err) from err
-        endpoint = result.get("endpoint", {}).get("httpBaseUrl")
-        credential = result.get("credential")
-        if not isinstance(endpoint, str) or not isinstance(credential, str):
-            raise T3ClientError("T3 Connect returned an invalid environment connection")
-        endpoint = endpoint.rstrip("/")
-        parsed = urlsplit(endpoint)
-        if parsed.scheme != "https" or not parsed.hostname:
-            raise T3ClientError("T3 Connect returned an insecure environment endpoint")
-        token_url = f"{endpoint}/oauth/token"
-        proof = self._proof("POST", token_url)
+                payload = _json_object(await response.json(), "relay token response")
+        except (ClientError, asyncio.TimeoutError, ValueError) as err:
+            raise request_failure("T3 Connect relay token exchange", err) from err
+        return _required_string(payload, "access_token", "relay token response")
+
+    async def _request_environment_credential(
+        self, relay_token: str, environment_id: str
+    ) -> tuple[str, str]:
+        url = f"{RELAY_URL}/v1/environments/{quote(environment_id, safe='')}/connect"
+        proof = self.dpop_key.create_proof("POST", url, relay_token)
         try:
-            async with self.session.post(
-                token_url,
+            async with self._session.post(
+                url,
+                headers={
+                    "Authorization": f"DPoP {relay_token}",
+                    "DPoP": proof,
+                },
+                json={"clientKeyThumbprint": self.dpop_key.thumbprint},
+            ) as response:
+                await self._check_response(
+                    response, "T3 Connect relay environment connection"
+                )
+                payload = _json_object(await response.json(), "environment connection")
+        except (ClientError, asyncio.TimeoutError, ValueError) as err:
+            raise request_failure(
+                "T3 Connect relay environment connection", err
+            ) from err
+
+        endpoint_data = _json_object(payload.get("endpoint"), "environment endpoint")
+        endpoint = _required_string(
+            endpoint_data, "httpBaseUrl", "environment endpoint"
+        )
+        credential = _required_string(payload, "credential", "environment connection")
+        endpoint = endpoint.rstrip("/")
+        try:
+            parsed = urlsplit(endpoint)
+            valid_endpoint = (
+                parsed.scheme == "https"
+                and parsed.hostname is not None
+                and parsed.username is None
+                and parsed.password is None
+                and not parsed.query
+                and not parsed.fragment
+            )
+        except ValueError:
+            valid_endpoint = False
+        if not valid_endpoint:
+            raise T3ClientError("T3 Connect returned an insecure environment endpoint")
+        return endpoint, credential
+
+    async def _exchange_environment_credential(
+        self, endpoint: str, credential: str
+    ) -> str:
+        url = f"{endpoint}/oauth/token"
+        proof = self.dpop_key.create_proof("POST", url)
+        try:
+            async with self._session.post(
+                url,
                 headers={"DPoP": proof},
                 data={
                     "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
                     "subject_token": credential,
                     "subject_token_type": "urn:t3:params:oauth:token-type:environment-bootstrap",
                     "requested_token_type": "urn:ietf:params:oauth:token-type:access_token",
-                    "scope": "orchestration:read",
+                    "scope": ENVIRONMENT_READ_SCOPE,
                     "client_label": "Home Assistant T3 Code Monitor",
                     "client_device_type": "bot",
                 },
             ) as response:
-                response.raise_for_status()
-                issued = await response.json()
+                await self._check_response(
+                    response, "T3 Connect read-only credential exchange"
+                )
+                payload = _json_object(
+                    await response.json(), "environment token response"
+                )
         except (ClientError, asyncio.TimeoutError, ValueError) as err:
-            raise _request_failure(
+            raise request_failure(
                 "T3 Connect read-only credential exchange", err
             ) from err
-        access_token = issued.get("access_token") if isinstance(issued, dict) else None
-        if (
-            not isinstance(access_token, str)
-            or not access_token
-            or issued.get("scope") != "orchestration:read"
-        ):
-            raise T3ClientError(
-                "T3 Code did not issue the requested orchestration:read session"
-            )
-        return endpoint, access_token
+        access_token = _required_string(
+            payload, "access_token", "environment token response"
+        )
+        scope = _required_string(payload, "scope", "environment token response")
+        if scope != ENVIRONMENT_READ_SCOPE:
+            raise T3ClientError("T3 Code did not grant orchestration:read")
+        return access_token
+
+    @staticmethod
+    async def _check_response(response: ClientResponse, action: str) -> None:
+        """Include only allowlisted relay error fields in safe diagnostics."""
+        if response.status < 400:
+            return
+        try:
+            payload = await response.json(content_type=None)
+        except (ValueError, ClientError):
+            payload = {}
+        code = payload.get("code") if isinstance(payload, dict) else None
+        reason = payload.get("reason") if isinstance(payload, dict) else None
+        details = [
+            f"{label}={value}"
+            for label, value in (("code", code), ("reason", reason))
+            if isinstance(value, str)
+            and value in (_SAFE_RELAY_CODES if label == "code" else _SAFE_RELAY_REASONS)
+        ]
+        suffix = f" ({', '.join(details)})" if details else ""
+        raise T3ClientError(
+            f"{action}: server returned HTTP {response.status}{suffix}."
+        )

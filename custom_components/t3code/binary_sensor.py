@@ -25,9 +25,7 @@ async def async_setup_entry(
     async_add_entities([T3CodeConnectionSensor(entry.runtime_data, entry)])
 
 
-class T3CodeConnectionSensor(
-    CoordinatorEntity[T3CodeCoordinator], BinarySensorEntity
-):
+class T3CodeConnectionSensor(CoordinatorEntity[T3CodeCoordinator], BinarySensorEntity):
     """Expose stream connectivity while remaining available during outages."""
 
     entity_description = BinarySensorEntityDescription(
@@ -54,5 +52,5 @@ class T3CodeConnectionSensor(
 
     @property
     def is_on(self) -> bool:
-        """Return whether the latest environment connection succeeded."""
-        return self.coordinator.last_update_success
+        """Return whether all selected environment connections are healthy."""
+        return self.coordinator.all_connected

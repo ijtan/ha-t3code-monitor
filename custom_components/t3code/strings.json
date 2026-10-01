@@ -1,7 +1,8 @@
 {
   "config": {
     "progress": {
-      "wait_for_authorization": "Waiting for T3 Connect approval"
+      "wait_for_authorization": "Waiting for T3 Connect approval",
+      "pair_environment": "Validating T3 Code pairing credential"
     },
     "step": {
       "user": {
@@ -27,9 +28,14 @@
         "data": {"authorized": "I approved access in my browser"}
       },
       "connect_environment": {
-        "title": "Choose a T3 Code environment",
-        "description": "Select one or more environments already linked to your T3 Connect account. The selected environments will share aggregate sensors.",
-        "data": {"environment_id": "Environment"}
+        "title": "Choose T3 Code environments",
+        "description": "Select one or more environments already linked to your T3 Connect account. Home Assistant will ask for a one-time pairing credential for each selected environment.",
+        "data": {"environment_id": "Environments"}
+      },
+      "connect_pairing": {
+        "title": "Pair {environment_name}",
+        "description": "Create a one-time pairing credential on this T3 host, then enter it below. The discovered environment URL is {environment_url}.",
+        "data": {"token": "One-time pairing credential"}
       }
     },
     "error": {
@@ -37,7 +43,7 @@
       "cannot_connect": "Could not connect to the T3 Code environment. Check the URL and network access.",
       "no_environments": "No T3 Code environments are linked to this T3 Connect account.",
       "select_environment": "Select at least one environment.",
-      "invalid_pairing_credential": "The pairing credential was rejected, expired, or could not be exchanged for orchestration:read. Create a new pairing credential and try again."
+        "invalid_pairing_credential": "The pairing credential was rejected, expired, or could not be exchanged for orchestration:read. Create a new pairing credential and try again."
     },
     "abort": {
       "already_configured": "This T3 Code environment is already configured.",
@@ -51,12 +57,14 @@
         "title": "Renew T3 Code Monitor connection",
         "description": "Direct connections: enter a fresh one-time pairing credential. T3 Connect connections: submit to renew using the saved account authorization. {diagnostic}",
         "data": {
+          "environment_id": "Environment",
           "token": "One-time pairing credential"
         }
       }
     },
     "error": {
-      "invalid_pairing_credential": "The pairing credential was rejected, expired, or could not be exchanged for orchestration:read. Create a new pairing credential and try again."
+      "invalid_pairing_credential": "The pairing credential was rejected, expired, or could not be exchanged for orchestration:read. Create a new pairing credential and try again.",
+      "renewal_failed": "Could not renew the T3 Connect session. Check the Home Assistant logs for a safe diagnostic."
     }
   }
 }
