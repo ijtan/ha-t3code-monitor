@@ -183,7 +183,7 @@ class T3Client:
 
     async def subscribe_shell(
         self, after_sequence: int
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncIterator[list[dict[str, Any]]]:
         """Subscribe to shell updates, acknowledging each Effect RPC stream chunk."""
         ticket = await self._websocket_ticket()
         parts = urlsplit(self._ws_base)
@@ -232,8 +232,7 @@ class T3Client:
                                         "T3 Code shell WebSocket delivered %d update(s)",
                                         len(shell_items),
                                     )
-                                for item in shell_items:
-                                    yield item
+                                yield shell_items
                                 await ws.send_json(
                                     {
                                         "_tag": "Ack",

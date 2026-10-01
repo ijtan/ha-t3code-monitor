@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -12,7 +13,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import DOMAIN
 from .errors import T3ClientError
-from .metrics import combine_shell_metrics, shell_metrics
+from .metrics import combine_shell_metrics, shell_metrics, thread_events
 from .t3_client import T3Client
 
 _LOGGER = logging.getLogger(__name__)
@@ -57,6 +58,25 @@ class T3CodeCoordinator(DataUpdateCoordinator[dict[str, int]]):
             for environment_id, (environment_name, client) in clients.items()
         }
         self._runners: list[asyncio.Task[None]] = []
+        self._event_listeners: dict[str, list[Callable[[dict[str, Any]], None]]] = {
+            "session_created": [],
+            "approval_required": [],
+            "user_input_required": [],
+        }
+
+    def add_event_listener(
+        self, event_type: str, listener: Callable[[dict[str, Any]], None]
+    ) -> Callable[[], None]:
+        """Register a listener for a specific pushed shell event type."""
+        if event_type not in self._event_listeners:
+            raise ValueError(f"Unsupported T3 Code event type: {event_type}")
+        listeners = self._event_listeners[event_type]
+        listeners.append(listener)
+
+        def remove_listener() -> None:
+            listeners.remove(listener)
+
+        return remove_listener
 
     @property
     def all_connected(self) -> bool:
@@ -116,9 +136,9 @@ class T3CodeCoordinator(DataUpdateCoordinator[dict[str, int]]):
                 self._apply_snapshot(state, snapshot)
                 state.snapshot_available = True
                 self._publish()
-                async for item in state.client.subscribe_shell(state.sequence):
+                async for items in state.client.subscribe_shell(state.sequence):
                     state.stream_connected = True
-                    self._handle_item(state, item)
+                    self._handle_items(environment_id, state, items)
             except asyncio.CancelledError:
                 raise
             except T3ClientError as err:
@@ -175,32 +195,72 @@ class T3CodeCoordinator(DataUpdateCoordinator[dict[str, int]]):
         }
         state.sequence = sequence
 
-    def _handle_item(self, state: _EnvironmentState, item: dict[str, Any]) -> None:
+    def _handle_items(
+        self,
+        environment_id: str,
+        state: _EnvironmentState,
+        items: list[dict[str, Any]],
+    ) -> None:
+        """Apply a pushed chunk and notify on per-thread state transitions."""
+        changed = False
+        for item in items:
+            incoming_thread = item.get("thread")
+            thread_id = (
+                incoming_thread.get("id") if isinstance(incoming_thread, dict) else None
+            )
+            previous_thread = (
+                state.threads.get(thread_id) if isinstance(thread_id, str) else None
+            )
+            item_changed = self._apply_stream_item(state, item)
+            changed = item_changed or changed
+            if (
+                not item_changed
+                or item.get("kind") != "thread-upserted"
+                or not isinstance(thread_id, str)
+            ):
+                continue
+            updated_thread = state.threads[thread_id]
+            event_data = {
+                "environment_id": environment_id,
+                "environment_name": state.name,
+                "thread_id": thread_id,
+                "thread_title": updated_thread.get("title"),
+            }
+            for event_type in thread_events(previous_thread, updated_thread):
+                for listener in tuple(self._event_listeners[event_type]):
+                    listener(event_data)
+        if not changed:
+            return
+        self._publish()
+
+    def _apply_stream_item(
+        self, state: _EnvironmentState, item: dict[str, Any]
+    ) -> bool:
         kind = item.get("kind")
         if kind == "snapshot":
             snapshot = item.get("snapshot")
             if isinstance(snapshot, dict):
                 self._apply_snapshot(state, snapshot)
-                self._publish()
-            return
+                return True
+            return False
         if kind == "synchronized":
-            return
+            return False
 
         sequence = item.get("sequence")
         if isinstance(sequence, int):
             if sequence <= state.sequence:
-                return
+                return False
             state.sequence = sequence
         if kind == "thread-removed":
             state.threads.pop(item.get("threadId"), None)
         elif kind == "thread-upserted":
             thread = item.get("thread")
             if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
-                return
+                return False
             state.threads[thread["id"]] = thread
         else:
-            return
-        self._publish()
+            return False
+        return True
 
     def _publish(self) -> None:
         counts = [shell_metrics(state.threads) for state in self._environments.values()]

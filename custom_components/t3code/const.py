@@ -15,7 +15,7 @@ CONNECTION_TYPE_CONNECT = "connect"
 CONNECTION_TYPE_CONNECT_MULTI = "connect_multi"
 CONNECTION_TYPE_CONNECT_PAIRING = "connect_pairing"
 
-PLATFORMS = ["sensor", "binary_sensor"]
+PLATFORMS = ["sensor", "binary_sensor", "event"]
 
 SESSION_STATUSES = (
     "starting",

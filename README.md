@@ -7,7 +7,8 @@ Monitor an **already-running** T3 Code environment from Home Assistant. This is 
 - One environment per integration entry, configured in the HA UI.
 - Read-only aggregate sensors for session status, pending approvals/input, running turns, and visible threads.
 - A connection-health binary sensor.
-- No event firing or control/command services in this MVP.
+- Push-based event entity for session creation, approval requests, and user-input requests.
+- No control or command services.
 - Snapshot plus resumable live shell updates; snapshots on initial setup/reconnect are baselines.
 
 T3 Code's shell RPC is currently an in-source client/server contract, not a documented stable third-party API. Compatibility with future T3 versions is not guaranteed. `orchestration:read` cannot mutate T3 state, but it can read files accessible to the T3 server account; protect the integration credentials accordingly.
@@ -38,12 +39,14 @@ The integration exchanges the one-time credential for a bearer session narrowed 
 
 Each environment creates count sensors for `starting`, `running`, `ready`, `idle`, `interrupted`, `stopped`, and `error`, plus threads without a session, pending approvals, pending input, running turns, and visible threads. These describe visible, unarchived T3 threads, not operating-system processes. The connection binary sensor reflects whether the integration can reach and synchronize with the environment.
 
+The activity event entity exposes `session_created`, `approval_required`, and `user_input_required` event types. Events are derived from pushed per-thread transitions, not aggregate sensor count changes, and include `environment_id`, `environment_name`, `thread_id`, and `thread_title`. For example, a newly pushed approval request still emits `approval_required` even if other approvals were resolved and the aggregate count fell. Snapshot refreshes and reconnect baselines update sensors but do not synthesize events. Since T3's stream is a coalesced state projection rather than an audit log, transitions missed during a disconnect cannot be replayed as events.
+
 ## Limitations
 
 - One-time pairing must currently be created on each T3 host; T3 Connect account OAuth is used for environment discovery only.
 - The WebSocket stream is a coalesced state projection, not an audit log. A 30-second snapshot refresh reconciles missed updates; brief intermediate states may not appear.
 - Reconnect snapshots reconcile current state and do not replay missed transitions.
-- Usage, cost, quota, and HA events are not included in this MVP.
+- Usage, cost, and quota are not included.
 
 ## Connection troubleshooting
 

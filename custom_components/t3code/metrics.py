@@ -47,3 +47,28 @@ def combine_shell_metrics(
         key: sum(metrics.get(key, 0) for metrics in metrics_by_environment)
         for key in metrics_by_environment[0]
     }
+
+
+def thread_events(
+    previous_thread: dict[str, Any] | None,
+    thread: dict[str, Any],
+) -> tuple[str, ...]:
+    """Identify new-session and pending-request transitions for one thread."""
+    events: list[str] = []
+    previous_session = (
+        previous_thread.get("session") if previous_thread is not None else None
+    )
+    if not isinstance(previous_session, dict) and isinstance(
+        thread.get("session"), dict
+    ):
+        events.append("session_created")
+
+    pending_flags = (
+        ("hasPendingApprovals", "approval_required"),
+        ("hasPendingUserInput", "user_input_required"),
+    )
+    for field, event_type in pending_flags:
+        was_pending = previous_thread is not None and bool(previous_thread.get(field))
+        if bool(thread.get(field)) and not was_pending:
+            events.append(event_type)
+    return tuple(events)
