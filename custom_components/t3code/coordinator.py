@@ -15,6 +15,7 @@ from .const import DOMAIN
 from .errors import T3ClientError
 from .metrics import combine_shell_metrics, shell_metrics, thread_events
 from .t3_client import T3Client
+from .usage_coordinator import T3UsageCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 RECONNECT_DELAY = 5
@@ -57,6 +58,7 @@ class T3CodeCoordinator(DataUpdateCoordinator[dict[str, int]]):
             environment_id: _EnvironmentState(name=environment_name, client=client)
             for environment_id, (environment_name, client) in clients.items()
         }
+        self.usage = T3UsageCoordinator(hass, clients, name, entry_id)
         self._runners: list[asyncio.Task[None]] = []
         self._event_listeners: dict[str, list[Callable[[dict[str, Any]], None]]] = {
             "session_created": [],
@@ -106,6 +108,7 @@ class T3CodeCoordinator(DataUpdateCoordinator[dict[str, int]]):
 
     def start(self) -> None:
         """Start push subscriptions and defensive snapshot polling."""
+        self.usage.start()
         for environment_id, state in self._environments.items():
             self._runners.extend(
                 (
@@ -122,6 +125,7 @@ class T3CodeCoordinator(DataUpdateCoordinator[dict[str, int]]):
 
     async def stop(self) -> None:
         """Cancel and await all active environment streams."""
+        await self.usage.stop()
         for runner in self._runners:
             runner.cancel()
         await asyncio.gather(*self._runners, return_exceptions=True)

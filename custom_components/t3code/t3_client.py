@@ -11,10 +11,16 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from aiohttp import ClientError, ClientSession, WSMsgType
 
-from .const import ORCHESTRATION_PROTOCOL_VERSION, RPC_SUBSCRIBE_SHELL
+from .const import (
+    ORCHESTRATION_PROTOCOL_VERSION,
+    RPC_SERVER_GET_USAGE_SUMMARY,
+    RPC_SUBSCRIBE_SERVER_CONFIG,
+    RPC_SUBSCRIBE_SHELL,
+)
 from .errors import T3ClientError, request_failure
 
 _LOGGER = logging.getLogger(__name__)
+RPC_TIMEOUT = 120
 
 
 class DpopProofSigner(Protocol):
@@ -43,7 +49,9 @@ def _shell_chunk_items(
     frame: dict[str, Any], request_id: str
 ) -> list[dict[str, Any]] | None:
     """Decode one matching Effect RPC stream chunk, ignoring unrelated frames."""
-    if frame.get("_tag") != "Chunk" or frame.get("requestId") != request_id:
+    if frame.get("_tag") != "Chunk" or not _request_id_matches(
+        frame.get("requestId"), request_id
+    ):
         return None
     values = frame.get("values")
     if not isinstance(values, list):
@@ -51,6 +59,38 @@ def _shell_chunk_items(
     if not all(isinstance(item, dict) for item in values):
         raise T3ClientError("T3 Code sent an invalid shell WebSocket event")
     return values
+
+
+def _rpc_request(
+    request_id: str, method: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    """Build a unary or streaming request in Effect RPC's JSON format."""
+    return {
+        "_tag": "Request",
+        "id": request_id,
+        "tag": method,
+        "payload": payload,
+        "headers": [],
+    }
+
+
+def _request_id_matches(value: Any, request_id: str) -> bool:
+    """Match Effect's decimal-string ids and numeric ids seen in HAR exports."""
+    return str(value) == request_id
+
+
+def _rpc_exit_value(frame: dict[str, Any], request_id: str) -> Any:
+    """Extract a successful unary result or raise a safe RPC error."""
+    if frame.get("_tag") != "Exit" or not _request_id_matches(
+        frame.get("requestId"), request_id
+    ):
+        return None
+    exit_value = frame.get("exit")
+    if not isinstance(exit_value, dict):
+        raise T3ClientError("T3 Code returned an invalid RPC response")
+    if exit_value.get("_tag") != "Success":
+        raise T3ClientError("T3 Code rejected a read-only usage request")
+    return exit_value.get("value")
 
 
 class T3Client:
@@ -181,13 +221,10 @@ class T3Client:
             raise T3ClientError("T3 Code returned an invalid WebSocket ticket")
         return ticket
 
-    async def subscribe_shell(
-        self, after_sequence: int
-    ) -> AsyncIterator[list[dict[str, Any]]]:
-        """Subscribe to shell updates, acknowledging each Effect RPC stream chunk."""
+    async def _websocket_url(self) -> str:
         ticket = await self._websocket_ticket()
         parts = urlsplit(self._ws_base)
-        ws_url = urlunsplit(
+        return urlunsplit(
             (
                 parts.scheme,
                 parts.netloc,
@@ -201,9 +238,147 @@ class T3Client:
                 "",
             )
         )
+
+    async def get_usage_summary(self, input: dict[str, str]) -> dict[str, Any]:
+        """Read an aggregated provider-usage summary for a date window."""
+        result = await self._call_rpc(RPC_SERVER_GET_USAGE_SUMMARY, input)
+        if (
+            not isinstance(result, dict)
+            or not isinstance(result.get("buckets"), list)
+            or not isinstance(result.get("sources"), list)
+            or not isinstance(result.get("pricing"), dict)
+        ):
+            raise T3ClientError("T3 Code returned an invalid usage summary")
+        return result
+
+    async def _call_rpc(self, method: str, payload: dict[str, Any]) -> Any:
+        """Call one read-only unary RPC over an authenticated Effect RPC socket."""
         request_id = "1"
         try:
-            async with self._session.ws_connect(ws_url, heartbeat=30) as ws:
+            async with self._session.ws_connect(
+                await self._websocket_url(), heartbeat=30
+            ) as ws:
+                await ws.send_json(_rpc_request(request_id, method, payload))
+                async with asyncio.timeout(RPC_TIMEOUT):
+                    async for message in ws:
+                        if message.type == WSMsgType.TEXT:
+                            try:
+                                decoded = json.loads(message.data)
+                            except json.JSONDecodeError as err:
+                                raise T3ClientError(
+                                    "T3 Code sent invalid WebSocket JSON"
+                                ) from err
+                            frames = decoded if isinstance(decoded, list) else [decoded]
+                            for frame in frames:
+                                if not isinstance(frame, dict):
+                                    continue
+                                if frame.get("_tag") == "Ping":
+                                    await ws.send_json({"_tag": "Pong"})
+                                    continue
+                                if frame.get("_tag") == "Exit" and _request_id_matches(
+                                    frame.get("requestId"), request_id
+                                ):
+                                    return _rpc_exit_value(frame, request_id)
+                                if frame.get("_tag") in {
+                                    "Defect",
+                                    "ClientProtocolError",
+                                }:
+                                    raise T3ClientError(
+                                        f"T3 Code RPC {method} failed at the protocol level"
+                                    )
+                        elif message.type in (
+                            WSMsgType.CLOSED,
+                            WSMsgType.CLOSE,
+                            WSMsgType.CLOSING,
+                        ):
+                            break
+                        elif message.type == WSMsgType.ERROR:
+                            raise T3ClientError("T3 Code WebSocket connection failed")
+        except T3ClientError:
+            raise
+        except (ClientError, asyncio.TimeoutError, OSError) as err:
+            raise request_failure(f"{method} request", err) from err
+        raise T3ClientError(f"T3 Code closed the connection during {method}")
+
+    async def subscribe_server_config(self) -> AsyncIterator[list[dict[str, Any]]]:
+        """Subscribe to provider limit snapshots and quota-source changes."""
+        request_id = "1"
+        try:
+            async with self._session.ws_connect(
+                await self._websocket_url(), heartbeat=30
+            ) as ws:
+                await ws.send_json(
+                    _rpc_request(
+                        request_id,
+                        RPC_SUBSCRIBE_SERVER_CONFIG,
+                        {"usageLimitSources": True},
+                    )
+                )
+                async for message in ws:
+                    if message.type == WSMsgType.TEXT:
+                        try:
+                            decoded = json.loads(message.data)
+                        except json.JSONDecodeError as err:
+                            raise T3ClientError(
+                                "T3 Code sent invalid WebSocket JSON"
+                            ) from err
+                        frames = decoded if isinstance(decoded, list) else [decoded]
+                        for frame in frames:
+                            if not isinstance(frame, dict):
+                                continue
+                            if frame.get("_tag") == "Ping":
+                                await ws.send_json({"_tag": "Pong"})
+                            elif frame.get("_tag") == "Chunk":
+                                if not _request_id_matches(
+                                    frame.get("requestId"), request_id
+                                ):
+                                    continue
+                                values = frame.get("values")
+                                if not isinstance(values, list) or not all(
+                                    isinstance(value, dict) for value in values
+                                ):
+                                    raise T3ClientError(
+                                        "T3 Code sent an invalid server-config event"
+                                    )
+                                yield values
+                                await ws.send_json(
+                                    {"_tag": "Ack", "requestId": request_id}
+                                )
+                            elif frame.get("_tag") == "Exit" and _request_id_matches(
+                                frame.get("requestId"), request_id
+                            ):
+                                raise T3ClientError(
+                                    "T3 Code ended the server-config subscription"
+                                )
+                            elif frame.get("_tag") in {
+                                "Defect",
+                                "ClientProtocolError",
+                            }:
+                                raise T3ClientError(
+                                    "T3 Code server-config subscription failed"
+                                )
+                    elif message.type in (
+                        WSMsgType.CLOSED,
+                        WSMsgType.CLOSE,
+                        WSMsgType.CLOSING,
+                    ):
+                        break
+                    elif message.type == WSMsgType.ERROR:
+                        raise T3ClientError("T3 Code WebSocket connection failed")
+        except T3ClientError:
+            raise
+        except (ClientError, asyncio.TimeoutError, OSError) as err:
+            raise request_failure("Server-config WebSocket connection", err) from err
+
+    async def subscribe_shell(
+        self, after_sequence: int
+    ) -> AsyncIterator[list[dict[str, Any]]]:
+        """Subscribe to shell updates, acknowledging each Effect RPC stream chunk."""
+        request_id = "1"
+        try:
+            async with self._session.ws_connect(
+                await self._websocket_url(), heartbeat=30
+            ) as ws:
                 _LOGGER.debug("T3 Code shell WebSocket connected")
                 await ws.send_json(
                     _shell_subscription_request(request_id, after_sequence)
@@ -239,9 +414,8 @@ class T3Client:
                                         "requestId": request_id,
                                     }
                                 )
-                            elif (
-                                message_type == "Exit"
-                                and frame.get("requestId") == request_id
+                            elif message_type == "Exit" and _request_id_matches(
+                                frame.get("requestId"), request_id
                             ):
                                 exit_value = frame.get("exit")
                                 if (

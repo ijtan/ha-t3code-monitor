@@ -28,4 +28,6 @@ SESSION_STATUSES = (
 )
 
 RPC_SUBSCRIBE_SHELL = "orchestration.subscribeShell"
+RPC_SERVER_GET_USAGE_SUMMARY = "server.getUsageSummary"
+RPC_SUBSCRIBE_SERVER_CONFIG = "subscribeServerConfig"
 ORCHESTRATION_PROTOCOL_VERSION = 1
