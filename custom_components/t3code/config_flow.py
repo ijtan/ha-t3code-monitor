@@ -86,6 +86,14 @@ def _pairing_credential_schema() -> vol.Schema:
     )
 
 
+def _pairing_description_placeholders(record: EnvironmentRecord) -> dict[str, str]:
+    """Provide every placeholder used by the environment pairing translations."""
+    return {
+        "environment_name": record["label"],
+        "environment_url": record["endpoint"]["httpBaseUrl"],
+    }
+
+
 async def _pair_environment(
     session: ClientSession,
     record: EnvironmentRecord,
@@ -347,10 +355,12 @@ class T3CodeConfigFlow(ConfigFlow, domain=DOMAIN):
         assert self._connected_environments is not None
         if self._pairing_task is not None:
             if not self._pairing_task.done():
+                record = self._selected_environments[self._pairing_index]
                 return self.async_show_progress(
                     step_id="connect_pairing",
                     progress_action="pair_environment",
                     progress_task=self._pairing_task,
+                    description_placeholders=_pairing_description_placeholders(record),
                 )
             try:
                 self._connected_environments.append(self._pairing_task.result())
@@ -366,10 +376,7 @@ class T3CodeConfigFlow(ConfigFlow, domain=DOMAIN):
                     step_id="connect_pairing",
                     data_schema=_pairing_credential_schema(),
                     errors={"base": "invalid_pairing_credential"},
-                    description_placeholders={
-                        "environment_name": record["label"],
-                        "environment_url": record["endpoint"]["httpBaseUrl"],
-                    },
+                    description_placeholders=_pairing_description_placeholders(record),
                 )
             self._pairing_task = None
             self._pairing_index += 1
@@ -389,10 +396,7 @@ class T3CodeConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_show_form(
                 step_id="connect_pairing",
                 data_schema=_pairing_credential_schema(),
-                description_placeholders={
-                    "environment_name": record["label"],
-                    "environment_url": record["endpoint"]["httpBaseUrl"],
-                },
+                description_placeholders=_pairing_description_placeholders(record),
             )
         self._pairing_task = self.hass.async_create_task(
             _pair_environment(
@@ -403,6 +407,7 @@ class T3CodeConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="connect_pairing",
             progress_action="pair_environment",
             progress_task=self._pairing_task,
+            description_placeholders=_pairing_description_placeholders(record),
         )
 
 
