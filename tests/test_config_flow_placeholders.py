@@ -1,13 +1,13 @@
-"""Guard the translated Connect pairing progress title placeholders."""
+"""Guard the translated Connect pairing placeholders."""
 
 import ast
+import json
 from pathlib import Path
 
 
 def test_pairing_progress_responses_supply_environment_placeholders() -> None:
-    source = (
-        Path(__file__).parents[1] / "custom_components" / "t3code" / "config_flow.py"
-    ).read_text()
+    integration_path = Path(__file__).parents[1] / "custom_components" / "t3code"
+    source = (integration_path / "config_flow.py").read_text()
     module = ast.parse(source)
     pairing_step = next(
         node
@@ -33,3 +33,7 @@ def test_pairing_progress_responses_supply_environment_placeholders() -> None:
         assert isinstance(placeholders, ast.Call)
         assert isinstance(placeholders.func, ast.Name)
         assert placeholders.func.id == "_pairing_description_placeholders"
+
+    strings = json.loads((integration_path / "strings.json").read_text())
+    pairing_title = strings["config"]["step"]["connect_pairing"]["title"]
+    assert "{" not in pairing_title
