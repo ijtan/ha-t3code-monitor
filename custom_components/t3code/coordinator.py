@@ -33,6 +33,8 @@ class _EnvironmentState:
     sequence: int = 0
     stream_connected: bool = False
     snapshot_available: bool = False
+    stream_failure_logged: bool = False
+    snapshot_failure_logged: bool = False
 
 
 class T3CodeCoordinator(DataUpdateCoordinator[dict[str, int]]):
@@ -127,20 +129,51 @@ class T3CodeCoordinator(DataUpdateCoordinator[dict[str, int]]):
 
     async def async_initialize(self) -> None:
         """Read initial snapshots before forwarding platforms to Home Assistant."""
-        errors: list[T3ClientError] = []
-        for state in self._environments.values():
+        errors: list[tuple[str, _EnvironmentState, T3ClientError]] = []
+        for environment_id, state in self._environments.items():
             try:
                 snapshot = await state.client.shell_snapshot()
+                self._apply_snapshot(state, snapshot)
+            except asyncio.CancelledError:
+                raise
             except T3ClientError as err:
-                errors.append(err)
+                errors.append((environment_id, state, err))
+                _LOGGER.warning(
+                    "Initial T3 Code connection failed for environment %s (%s): %s",
+                    state.name,
+                    environment_id,
+                    err,
+                )
                 continue
-            self._apply_snapshot(state, snapshot)
+            except Exception as err:  # noqa: BLE001 - protect setup from client bugs
+                safe_error = T3ClientError(
+                    f"Unexpected error ({type(err).__name__}) while reading the shell snapshot."
+                )
+                errors.append((environment_id, state, safe_error))
+                _LOGGER.error(
+                    "Unexpected error during initial T3 Code connection for environment %s (%s), error type %s",
+                    state.name,
+                    environment_id,
+                    type(err).__name__,
+                )
+                continue
             state.snapshot_available = True
 
         if errors and not any(
             state.snapshot_available for state in self._environments.values()
         ):
-            raise errors[0]
+            _LOGGER.error(
+                "T3 Code setup failed: none of %d configured environments could be reached",
+                len(self._environments),
+            )
+            raise errors[0][2]
+        if errors:
+            _LOGGER.warning(
+                "T3 Code setup reached %d of %d configured environments; "
+                "unavailable environments will be retried",
+                self.environment_count - len(errors),
+                self.environment_count,
+            )
         self._publish()
 
     def start(self) -> None:
@@ -182,18 +215,42 @@ class T3CodeCoordinator(DataUpdateCoordinator[dict[str, int]]):
                 async for items in state.client.subscribe_shell(state.sequence):
                     if not state.stream_connected:
                         state.stream_connected = True
+                        if state.stream_failure_logged:
+                            _LOGGER.info(
+                                "T3 Code shell stream reconnected for environment %s (%s)",
+                                state.name,
+                                environment_id,
+                            )
+                            state.stream_failure_logged = False
                         self._publish()
                     self._handle_items(environment_id, state, items)
             except asyncio.CancelledError:
                 raise
             except T3ClientError as err:
-                _LOGGER.warning(
-                    "T3 Code connection unavailable (%s): %s", state.name, err
+                if not state.stream_failure_logged:
+                    _LOGGER.warning(
+                        "T3 Code shell stream unavailable for environment %s (%s): %s",
+                        state.name,
+                        environment_id,
+                        err,
+                    )
+                    state.stream_failure_logged = True
+                else:
+                    _LOGGER.debug(
+                        "T3 Code shell stream retry failed for environment %s (%s): %s",
+                        state.name,
+                        environment_id,
+                        err,
+                    )
+            except Exception as err:  # noqa: BLE001 - keep reconnect loop alive
+                log = _LOGGER.debug if state.stream_failure_logged else _LOGGER.error
+                log(
+                    "Unexpected error reading T3 Code environment %s (%s), error type %s",
+                    state.name,
+                    environment_id,
+                    type(err).__name__,
                 )
-            except Exception:
-                _LOGGER.exception(
-                    "Unexpected error reading T3 Code environment %s", state.name
-                )
+                state.stream_failure_logged = True
 
             state.stream_connected = False
             self._publish()
@@ -209,18 +266,43 @@ class T3CodeCoordinator(DataUpdateCoordinator[dict[str, int]]):
                 snapshot = await state.client.shell_snapshot()
                 self._apply_snapshot(state, snapshot)
                 state.snapshot_available = True
+                if state.snapshot_failure_logged:
+                    _LOGGER.info(
+                        "T3 Code snapshot polling recovered for environment %s (%s)",
+                        state.name,
+                        environment_id,
+                    )
+                    state.snapshot_failure_logged = False
             except asyncio.CancelledError:
                 raise
             except T3ClientError as err:
                 state.snapshot_available = False
-                _LOGGER.warning(
-                    "T3 Code snapshot refresh failed (%s): %s", state.name, err
-                )
-            except Exception:
+                if not state.snapshot_failure_logged:
+                    _LOGGER.warning(
+                        "T3 Code snapshot polling failed for environment %s (%s): %s",
+                        state.name,
+                        environment_id,
+                        err,
+                    )
+                    state.snapshot_failure_logged = True
+                else:
+                    _LOGGER.debug(
+                        "T3 Code snapshot retry failed for environment %s (%s): %s",
+                        state.name,
+                        environment_id,
+                        err,
+                    )
+            except Exception as err:  # noqa: BLE001 - keep polling loop alive
                 state.snapshot_available = False
-                _LOGGER.exception(
-                    "Unexpected error refreshing T3 Code environment %s", state.name
+                log = _LOGGER.debug if state.snapshot_failure_logged else _LOGGER.error
+                log(
+                    "Unexpected error refreshing T3 Code environment %s (%s), "
+                    "error type %s",
+                    state.name,
+                    environment_id,
+                    type(err).__name__,
                 )
+                state.snapshot_failure_logged = True
             self._publish()
 
     @staticmethod

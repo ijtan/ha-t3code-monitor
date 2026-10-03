@@ -59,6 +59,7 @@ class T3UsageCoordinator(DataUpdateCoordinator[UsageCoordinatorData]):
         self._provider_unavailable: dict[str, int] = {}
         self._source_errors: dict[str, int] = {}
         self._connected_limit_streams: set[str] = set()
+        self._limit_failures_logged: set[str] = set()
         self._tasks: list[asyncio.Task[None]] = []
         self._last_summary_update: str | None = None
 
@@ -182,10 +183,13 @@ class T3UsageCoordinator(DataUpdateCoordinator[UsageCoordinatorData]):
             self._clients.items(), results, strict=True
         ):
             if isinstance(result, BaseException):
+                if isinstance(result, asyncio.CancelledError):
+                    raise result
                 self._summary_errors.add(environment_id)
                 _LOGGER.warning(
-                    "T3 Code usage summary unavailable (%s): %s",
+                    "T3 Code usage summary unavailable for environment %s (%s): %s",
                     _environment_name,
+                    environment_id,
                     result
                     if isinstance(result, T3ClientError)
                     else type(result).__name__,
@@ -204,8 +208,11 @@ class T3UsageCoordinator(DataUpdateCoordinator[UsageCoordinatorData]):
                 await self.async_refresh_usage()
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                _LOGGER.exception("Unexpected error refreshing T3 Code usage summaries")
+            except Exception as err:  # noqa: BLE001 - keep refresh loop alive
+                _LOGGER.error(
+                    "Unexpected error refreshing T3 Code usage summaries, error type %s",
+                    type(err).__name__,
+                )
             await asyncio.sleep(USAGE_REFRESH_INTERVAL.total_seconds())
 
     async def _limit_stream_loop(
@@ -215,6 +222,13 @@ class T3UsageCoordinator(DataUpdateCoordinator[UsageCoordinatorData]):
             try:
                 async for events in client.subscribe_server_config():
                     self._connected_limit_streams.add(environment_id)
+                    if environment_id in self._limit_failures_logged:
+                        _LOGGER.info(
+                            "T3 Code provider-limit stream reconnected for environment %s (%s)",
+                            environment_name,
+                            environment_id,
+                        )
+                        self._limit_failures_logged.discard(environment_id)
                     for event in events:
                         self._handle_config_event(
                             environment_id, environment_name, event
@@ -223,16 +237,34 @@ class T3UsageCoordinator(DataUpdateCoordinator[UsageCoordinatorData]):
             except asyncio.CancelledError:
                 raise
             except T3ClientError as err:
-                _LOGGER.warning(
-                    "T3 Code provider limits unavailable (%s): %s",
-                    environment_name,
-                    err,
+                if environment_id not in self._limit_failures_logged:
+                    _LOGGER.warning(
+                        "T3 Code provider-limit stream unavailable for environment %s (%s): %s",
+                        environment_name,
+                        environment_id,
+                        err,
+                    )
+                    self._limit_failures_logged.add(environment_id)
+                else:
+                    _LOGGER.debug(
+                        "T3 Code provider-limit stream retry failed for environment %s (%s): %s",
+                        environment_name,
+                        environment_id,
+                        err,
+                    )
+            except Exception as err:  # noqa: BLE001 - keep subscription loop alive
+                log = (
+                    _LOGGER.debug
+                    if environment_id in self._limit_failures_logged
+                    else _LOGGER.error
                 )
-            except Exception:
-                _LOGGER.exception(
-                    "Unexpected error reading T3 Code provider limits (%s)",
+                log(
+                    "Unexpected error reading T3 Code provider limits for environment %s (%s), error type %s",
                     environment_name,
+                    environment_id,
+                    type(err).__name__,
                 )
+                self._limit_failures_logged.add(environment_id)
             self._connected_limit_streams.discard(environment_id)
             self._publish()
             await asyncio.sleep(LIMIT_RECONNECT_DELAY)

@@ -24,3 +24,12 @@ def test_timeout_failure_is_explicit() -> None:
     diagnostic = str(request_failure("Shell snapshot request", TimeoutError()))
 
     assert diagnostic == "Shell snapshot request: The request timed out."
+
+
+def test_authorization_failure_is_distinguished_from_other_http_errors() -> None:
+    error = ClientResponseError(None, (), status=401)
+
+    diagnostic = str(request_failure("Shell snapshot request", error))
+
+    assert "HTTP 401" in diagnostic
+    assert "Authorization failed" in diagnostic

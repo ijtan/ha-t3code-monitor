@@ -439,7 +439,24 @@ class T3CodeOptionsFlow(OptionsFlow):
                     else "invalid_pairing_credential"
                 )
                 diagnostic = str(err)
-                _LOGGER.warning("T3 Code credential renewal failed: %s", diagnostic)
+                connection_type = self.config_entry.data.get(CONF_CONNECTION_TYPE)
+                if connection_type == CONNECTION_TYPE_CONNECT_PAIRING:
+                    environment_id = user_input.get(CONF_ENVIRONMENT_ID, "unknown")
+                    _LOGGER.warning(
+                        "T3 Code credential renewal failed for environment %s: %s",
+                        environment_id,
+                        diagnostic,
+                    )
+                elif connection_type == CONNECTION_TYPE_CONNECT_MULTI:
+                    _LOGGER.warning(
+                        "T3 Connect environment credential renewal failed: %s",
+                        diagnostic,
+                    )
+                else:
+                    _LOGGER.warning(
+                        "T3 Code credential renewal failed for the configured environment: %s",
+                        diagnostic,
+                    )
             else:
                 return self.async_create_entry(title="", data=options)
 
@@ -546,16 +563,20 @@ class T3CodeOptionsFlow(OptionsFlow):
         refreshed = await connect.refresh_cloud_session(saved_refresh)
         updated_environments: list[StoredEnvironment] = []
         for environment in environments:
-            endpoint, access_token = await connect.connect_environment(
-                refreshed["access_token"], environment[CONF_ENVIRONMENT_ID]
-            )
-            if endpoint != environment["base_url"]:
-                raise T3ClientError(
-                    "T3 Connect returned a changed endpoint. Reconfigure this entry."
+            environment_id = environment[CONF_ENVIRONMENT_ID]
+            try:
+                endpoint, access_token = await connect.connect_environment(
+                    refreshed["access_token"], environment_id
                 )
-            await T3Client(
-                session, endpoint, access_token, connect.dpop_key
-            ).shell_snapshot()
+                if endpoint != environment["base_url"]:
+                    raise T3ClientError(
+                        "T3 Connect returned a changed endpoint. Reconfigure this entry."
+                    )
+                await T3Client(
+                    session, endpoint, access_token, connect.dpop_key
+                ).shell_snapshot()
+            except T3ClientError as err:
+                raise T3ClientError(f"Environment {environment_id}: {err}") from err
             updated_environments.append({**environment, CONF_TOKEN: access_token})
 
         updated_refresh = refreshed.get("refresh_token", saved_refresh)

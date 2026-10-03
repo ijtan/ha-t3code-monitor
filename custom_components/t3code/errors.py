@@ -25,7 +25,16 @@ def request_failure(action: str, err: Exception) -> T3ClientError:
     elif isinstance(err, ContentTypeError):
         detail = "The server did not return JSON. Check the environment URL."
     elif isinstance(err, ClientResponseError):
+        status_detail = {
+            401: "Authorization failed.",
+            403: "The server denied the requested access.",
+            404: "The requested endpoint was not found.",
+        }.get(err.status)
+        if status_detail is None and err.status >= 500:
+            status_detail = "The server encountered an error."
         detail = f"The server returned HTTP {err.status}."
+        if status_detail is not None:
+            detail = f"{detail} {status_detail}"
     elif isinstance(err, ClientSSLError):
         detail = "The HTTPS certificate or TLS handshake failed."
     elif isinstance(err, ClientConnectorError):

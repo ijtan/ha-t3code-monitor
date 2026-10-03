@@ -57,7 +57,7 @@ Provider limit sensors are created when T3 reports quota windows for configured 
 
 ## Connection troubleshooting
 
-The setup form shows the latest connection diagnostic, and Home Assistant logs a warning under `custom_components.t3code.config_flow`. The URL must be the T3 environment's API origin, such as `http://192.168.1.20:3773` or the direct environment hostname provided by T3 Connect. Do not enter `app.t3.codes`, a T3 account page, or a `/pair` URL. Also confirm the HA host itself can resolve and reach that address. Diagnostics intentionally omit credentials, URL paths, and query strings. If setup still fails, share the warning line and the HTTP status or network error, but never share the pairing credential or access token.
+The setup form shows the latest connection diagnostic. Home Assistant logs initial setup failures and later connection changes under `custom_components.t3code.coordinator`, with the affected environment name and ID. Repeated reconnect failures are reduced to debug-level messages until the connection recovers. Config-flow and credential renewal issues are logged under `custom_components.t3code.config_flow`. The URL must be the T3 environment's API origin, such as `http://192.168.1.20:3773` or the direct environment hostname provided by T3 Connect. Do not enter `app.t3.codes`, a T3 account page, or a `/pair` URL. Also confirm the HA host itself can resolve and reach that address. Diagnostics intentionally omit credentials, URL paths, and query strings. If setup still fails, share the relevant warning and error lines, but never share the pairing credential or access token.
 
 ### T3 Connect account setup
 
