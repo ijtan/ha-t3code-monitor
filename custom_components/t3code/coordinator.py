@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
@@ -42,7 +43,7 @@ class T3CodeCoordinator(DataUpdateCoordinator[dict[str, int]]):
         hass: HomeAssistant,
         clients: dict[str, tuple[str, T3Client]],
         name: str,
-        entry_id: str,
+        entry: ConfigEntry,
     ) -> None:
         super().__init__(
             hass,
@@ -53,12 +54,13 @@ class T3CodeCoordinator(DataUpdateCoordinator[dict[str, int]]):
         if not clients:
             raise ValueError("At least one T3 environment client is required")
         self.environment_name = name
-        self.entry_id = entry_id
+        self.entry = entry
+        self.entry_id = entry.entry_id
         self._environments = {
             environment_id: _EnvironmentState(name=environment_name, client=client)
             for environment_id, (environment_name, client) in clients.items()
         }
-        self.usage = T3UsageCoordinator(hass, clients, name, entry_id)
+        self.usage = T3UsageCoordinator(hass, clients, name, entry)
         self._runners: list[asyncio.Task[None]] = []
         self._event_listeners: dict[str, list[Callable[[dict[str, Any]], None]]] = {
             "session_created": [],
@@ -147,13 +149,15 @@ class T3CodeCoordinator(DataUpdateCoordinator[dict[str, int]]):
         for environment_id, state in self._environments.items():
             self._runners.extend(
                 (
-                    self.hass.async_create_task(
+                    self.entry.async_create_background_task(
+                        self.hass,
                         self._run_environment(environment_id, state),
-                        name=f"t3code_{self.entry_id}_{environment_id}_stream",
+                        f"t3code_{self.entry_id}_{environment_id}_stream",
                     ),
-                    self.hass.async_create_task(
+                    self.entry.async_create_background_task(
+                        self.hass,
                         self._poll_environment(environment_id, state),
-                        name=f"t3code_{self.entry_id}_{environment_id}_snapshot",
+                        f"t3code_{self.entry_id}_{environment_id}_snapshot",
                     ),
                 )
             )

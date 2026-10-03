@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
@@ -39,7 +40,7 @@ class T3UsageCoordinator(DataUpdateCoordinator[UsageCoordinatorData]):
         hass: HomeAssistant,
         clients: dict[str, tuple[str, T3Client]],
         name: str,
-        entry_id: str,
+        entry: ConfigEntry,
     ) -> None:
         super().__init__(
             hass,
@@ -48,7 +49,8 @@ class T3UsageCoordinator(DataUpdateCoordinator[UsageCoordinatorData]):
             update_interval=None,
         )
         self.environment_name = name
-        self.entry_id = entry_id
+        self.entry = entry
+        self.entry_id = entry.entry_id
         self._clients = clients
         self._summaries: dict[str, dict[str, Any]] = {}
         self._summary_errors: set[str] = set()
@@ -136,16 +138,18 @@ class T3UsageCoordinator(DataUpdateCoordinator[UsageCoordinatorData]):
     def start(self) -> None:
         """Start usage refresh and one provider-limit stream per environment."""
         self._tasks.append(
-            self.hass.async_create_task(
+            self.entry.async_create_background_task(
+                self.hass,
                 self._usage_refresh_loop(),
-                name=f"t3code_{self.entry_id}_usage_refresh",
+                f"t3code_{self.entry_id}_usage_refresh",
             )
         )
         for environment_id, (environment_name, client) in self._clients.items():
             self._tasks.append(
-                self.hass.async_create_task(
+                self.entry.async_create_background_task(
+                    self.hass,
                     self._limit_stream_loop(environment_id, environment_name, client),
-                    name=f"t3code_{self.entry_id}_{environment_id}_limits",
+                    f"t3code_{self.entry_id}_{environment_id}_limits",
                 )
             )
 

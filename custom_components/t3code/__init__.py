@@ -80,7 +80,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: T3CodeConfigEntry) -> bo
         hass,
         clients,
         entry.data.get(CONF_NAME, entry.title),
-        entry.entry_id,
+        entry,
     )
     try:
         await coordinator.async_initialize()
