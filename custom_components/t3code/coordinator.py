@@ -88,6 +88,41 @@ class T3CodeCoordinator(DataUpdateCoordinator[dict[str, int]]):
             for state in self._environments.values()
         )
 
+    @property
+    def environment_ids(self) -> tuple[str, ...]:
+        """Configured T3 environment IDs, in their stable setup order."""
+        return tuple(self._environments)
+
+    @property
+    def environment_count(self) -> int:
+        """Number of T3 environments represented by this config entry."""
+        return len(self._environments)
+
+    def environment_name(self, environment_id: str) -> str:
+        """Return the display name associated with one configured environment."""
+        state = self._environments.get(environment_id)
+        return state.name if state is not None else environment_id
+
+    def environment_metrics(self, environment_id: str) -> dict[str, int]:
+        """Return shell counters for one environment, without aggregation."""
+        state = self._environments.get(environment_id)
+        return shell_metrics(state.threads) if state is not None else shell_metrics({})
+
+    def environment_connected(self, environment_id: str) -> bool:
+        """Whether one environment has a working stream or recent snapshot."""
+        state = self._environments.get(environment_id)
+        return bool(state and (state.stream_connected or state.snapshot_available))
+
+    def environment_connection_attributes(self, environment_id: str) -> dict[str, Any]:
+        """Expose the stream and snapshot health components for one environment."""
+        state = self._environments.get(environment_id)
+        return {
+            "environment_id": environment_id,
+            "environment_name": self.environment_name(environment_id),
+            "stream_connected": bool(state and state.stream_connected),
+            "snapshot_available": bool(state and state.snapshot_available),
+        }
+
     async def async_initialize(self) -> None:
         """Read initial snapshots before forwarding platforms to Home Assistant."""
         errors: list[T3ClientError] = []
@@ -141,7 +176,9 @@ class T3CodeCoordinator(DataUpdateCoordinator[dict[str, int]]):
                 state.snapshot_available = True
                 self._publish()
                 async for items in state.client.subscribe_shell(state.sequence):
-                    state.stream_connected = True
+                    if not state.stream_connected:
+                        state.stream_connected = True
+                        self._publish()
                     self._handle_items(environment_id, state, items)
             except asyncio.CancelledError:
                 raise

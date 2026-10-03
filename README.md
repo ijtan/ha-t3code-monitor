@@ -8,7 +8,7 @@ Monitor an **already-running** T3 Code environment from Home Assistant. This is 
 - Read-only aggregate sensors for session status, pending approvals/input, running turns, and visible threads.
 - A connection-health binary sensor.
 - Push-based event entity for session creation, approval requests, and user-input requests.
-- Read-only usage and estimated-cost history for the current month and rolling 90 days, plus provider-reported quota windows.
+- Read-only aggregate and per-environment usage and estimated-cost history for the current month and rolling 90 days, plus provider-reported quota windows.
 - No control or command services.
 - Snapshot plus resumable live shell updates; snapshots on initial setup/reconnect are baselines.
 
@@ -43,6 +43,8 @@ Each environment creates count sensors for `starting`, `running`, `ready`, `idle
 The activity event entity exposes `session_created`, `approval_required`, and `user_input_required` event types. Events are derived from pushed per-thread transitions, not aggregate sensor count changes, and include `environment_id`, `environment_name`, `thread_id`, and `thread_title`. For example, a newly pushed approval request still emits `approval_required` even if other approvals were resolved and the aggregate count fell. Snapshot refreshes and reconnect baselines update sensors but do not synthesize events. Since T3's stream is a coalesced state projection rather than an audit log, transitions missed during a disconnect cannot be replayed as events.
 
 Usage sensors report provider token totals and estimated API-equivalent cost for the current calendar month and rolling 90 days. They refresh every 30 minutes, use the Home Assistant time zone, and combine selected environments while deduplicating matching physical transcript sources. Attributes expose input/cache/output breakdowns, provider totals, pricing quality, and source coverage. This data comes from provider transcript usage on the monitored hosts and can include CLI or other application activity, not just T3 Code sessions. Estimated API-equivalent cost is not a subscription bill; records without known prices are included in token totals and identified as unpriced.
+
+When a T3 Connect entry contains multiple environments, the entry-level sensors remain aggregates and each selected environment also gets its own Home Assistant device with per-environment shell counters, usage totals, provider-limit window count, and connection status. The aggregate connection sensor is on only when every selected environment is reachable; per-environment connection sensors identify which host is unavailable. These per-environment entities are omitted for single-environment entries to avoid duplicating the aggregate sensors.
 
 Provider limit sensors are created when T3 reports quota windows for configured providers or usage-limit sources. Each reports **remaining percent**, with used percent, provider/window, last check, and reset time in attributes. A diagnostic sensor reports how many windows T3 currently exposes and how many environment limit streams are connected. Limit updates use T3's server-config push stream. Limits are provider-reported and provider-dependent; some accounts provide no quota window, and remaining token counts are not available unless the provider itself reports them.
 

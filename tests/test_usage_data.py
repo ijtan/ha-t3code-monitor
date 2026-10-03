@@ -4,6 +4,7 @@ from datetime import date
 
 from custom_components.t3code.usage_data import (
     UsageLimitWindow,
+    aggregate_usage_by_environment,
     aggregate_usage_periods,
     provider_limit_windows,
     source_limit_windows,
@@ -94,6 +95,32 @@ def test_aggregate_usage_calculates_month_and_rolling_periods() -> None:
     assert periods["90_days"].source_skipped_files == 0
     assert periods["90_days"].pricing_statuses == ("fresh",)
     assert periods["90_days"].providers["codex"]["total_tokens"] == 36
+
+
+def test_per_environment_usage_is_not_combined_with_other_environment_totals() -> None:
+    first = _summary(day_buckets=[_bucket("2026-10-01")])
+    second_bucket = _bucket("2026-10-01") | {
+        "totals": {
+            "uncachedInputTokens": 100,
+            "cachedInputTokens": 0,
+            "cacheCreationTokens": 0,
+            "outputTokens": 20,
+            "reasoningTokens": 5,
+        },
+        "costUsd": 2.5,
+    }
+    second = _summary(day_buckets=[second_bucket])
+
+    per_environment = aggregate_usage_by_environment(
+        [("laptop", first), ("desktop", second)],
+        date(2026, 10, 1),
+        date(2026, 7, 4),
+        date(2026, 10, 1),
+    )
+
+    assert per_environment["laptop"]["month"].total_tokens == 18
+    assert per_environment["desktop"]["month"].total_tokens == 120
+    assert per_environment["desktop"]["month"].cost_usd == 2.5
 
 
 def test_duplicate_physical_usage_source_is_counted_once() -> None:

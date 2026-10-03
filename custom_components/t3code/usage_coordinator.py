@@ -18,6 +18,7 @@ from .usage_data import (
     UsageCoordinatorData,
     UsageLimitWindow,
     UsagePeriod,
+    aggregate_usage_by_environment,
     aggregate_usage_periods,
     provider_limit_windows,
     source_limit_windows,
@@ -75,6 +76,62 @@ class T3UsageCoordinator(DataUpdateCoordinator[UsageCoordinatorData]):
     def environment_count(self) -> int:
         """Number of configured environments included in usage polling."""
         return len(self._clients)
+
+    @property
+    def environment_ids(self) -> tuple[str, ...]:
+        """Configured environment IDs, in their setup order."""
+        return tuple(self._clients)
+
+    def environment_name(self, environment_id: str) -> str:
+        """Return the display name associated with one configured environment."""
+        environment = self._clients.get(environment_id)
+        return environment[0] if environment is not None else environment_id
+
+    def periods_for_environment(
+        self, environment_id: str
+    ) -> dict[str, UsagePeriod] | None:
+        """Return the current-month and rolling-90-day periods for one host."""
+        if self.data is None:
+            return None
+        return self.data.environment_periods.get(environment_id)
+
+    def summary_error_for_environment(self, environment_id: str) -> bool:
+        """Whether the latest usage-summary request for one host failed."""
+        return (
+            self.data.environment_summary_errors.get(environment_id, False)
+            if self.data is not None
+            else False
+        )
+
+    def summary_updated_at_for_environment(self, environment_id: str) -> str | None:
+        """Return the latest successful usage-scan time for one host."""
+        return (
+            self.data.environment_summary_updated_at.get(environment_id)
+            if self.data is not None
+            else None
+        )
+
+    def limits_for_environment(
+        self, environment_id: str
+    ) -> dict[str, UsageLimitWindow]:
+        """Return quota windows reported by one host only."""
+        return {
+            **self._provider_windows.get(environment_id, {}),
+            **self._source_windows.get(environment_id, {}),
+        }
+
+    def limit_stream_connected(self, environment_id: str) -> bool:
+        """Whether one host's provider-limit stream has delivered a snapshot."""
+        return environment_id in self._connected_limit_streams
+
+    def limit_diagnostics_for_environment(self, environment_id: str) -> dict[str, int]:
+        """Return provider-probe and usage-source errors for one host."""
+        return {
+            "provider_limit_probes_unavailable": self._provider_unavailable.get(
+                environment_id, 0
+            ),
+            "usage_limit_source_errors": self._source_errors.get(environment_id, 0),
+        }
 
     def start(self) -> None:
         """Start usage refresh and one provider-limit stream per environment."""
@@ -228,6 +285,12 @@ class T3UsageCoordinator(DataUpdateCoordinator[UsageCoordinatorData]):
                 current_day - timedelta(days=89),
                 current_day,
             )
+        environment_periods = aggregate_usage_by_environment(
+            list(self._summaries.items()),
+            current_day.replace(day=1),
+            current_day - timedelta(days=89),
+            current_day,
+        )
         limits = {
             **{
                 key: value
@@ -251,6 +314,19 @@ class T3UsageCoordinator(DataUpdateCoordinator[UsageCoordinatorData]):
                     self._provider_unavailable.values()
                 ),
                 usage_limit_source_errors=sum(self._source_errors.values()),
+                environment_periods=environment_periods,
+                environment_summary_errors={
+                    environment_id: environment_id in self._summary_errors
+                    for environment_id in self._clients
+                },
+                environment_summary_updated_at={
+                    environment_id: (
+                        summary.get("readAt")
+                        if isinstance(summary.get("readAt"), str)
+                        else None
+                    )
+                    for environment_id, summary in self._summaries.items()
+                },
             )
         )
 

@@ -69,6 +69,9 @@ class UsageCoordinatorData:
     limit_streams_connected: int = 0
     provider_limit_probes_unavailable: int = 0
     usage_limit_source_errors: int = 0
+    environment_periods: dict[str, dict[str, UsagePeriod]] = field(default_factory=dict)
+    environment_summary_errors: dict[str, bool] = field(default_factory=dict)
+    environment_summary_updated_at: dict[str, str | None] = field(default_factory=dict)
 
 
 @dataclass
@@ -466,6 +469,21 @@ def aggregate_usage_periods(
                 accumulator.pricing_statuses.add(pricing_status)
 
     return {key: accumulator.freeze() for key, accumulator in accumulators.items()}
+
+
+def aggregate_usage_by_environment(
+    summaries: list[tuple[str, dict[str, Any]]],
+    month_start: date,
+    ninety_day_start: date,
+    today: date,
+) -> dict[str, dict[str, UsagePeriod]]:
+    """Project each environment's totals independently, without cross-host merging."""
+    return {
+        environment_id: aggregate_usage_periods(
+            [(environment_id, summary)], month_start, ninety_day_start, today
+        )
+        for environment_id, summary in summaries
+    }
 
 
 def _source_owners(
