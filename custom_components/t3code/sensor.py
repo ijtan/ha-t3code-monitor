@@ -18,7 +18,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import T3CodeCoordinator
-from .const import DOMAIN, SESSION_STATUSES
+from .const import DOMAIN, THREAD_STATUSES
 from .usage_coordinator import T3UsageCoordinator
 from .usage_data import UsageLimitWindow, UsagePeriod
 
@@ -34,18 +34,12 @@ DESCRIPTIONS = [
     *[
         T3CodeSensorDescription(
             key=f"session_{status}",
-            name=f"Sessions {status}",
+            name=f"Threads {status.replace('_', ' ')}",
             icon="mdi:robot",
             metric=f"session_{status}",
         )
-        for status in SESSION_STATUSES
+        for status in THREAD_STATUSES
     ],
-    T3CodeSensorDescription(
-        key="session_missing",
-        name="Threads without session",
-        icon="mdi:robot-off",
-        metric="session_missing",
-    ),
     T3CodeSensorDescription(
         key="pending_approvals",
         name="Pending approvals",
@@ -60,7 +54,7 @@ DESCRIPTIONS = [
     ),
     T3CodeSensorDescription(
         key="running_turns",
-        name="Running turns",
+        name="Active runs",
         icon="mdi:progress-clock",
         metric="running_turns",
     ),
@@ -142,7 +136,7 @@ class T3CodeSensor(CoordinatorEntity[T3CodeCoordinator], SensorEntity):
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": coordinator.environment_name,
+            "name": coordinator.entry_name,
             "manufacturer": "T3",
             "model": "T3 Code Monitor",
         }
@@ -214,7 +208,7 @@ class T3UsageSensor(CoordinatorEntity[T3UsageCoordinator], SensorEntity):
         self._attr_name = f"Usage {measure_label} {period_label}"
         if environment_id is None:
             self._attr_unique_id = f"{entry.entry_id}_usage_{period}_{measure}"
-            self._attr_device_info = _device_info(entry, coordinator.environment_name)
+            self._attr_device_info = _device_info(entry, coordinator.entry_name)
         else:
             identity = _environment_identity(environment_id)
             self._attr_unique_id = (
@@ -331,7 +325,7 @@ class T3ProviderLimitSensor(CoordinatorEntity[T3UsageCoordinator], SensorEntity)
                 window.environment_name,
             )
             if coordinator.environment_count > 1
-            else _device_info(entry, coordinator.environment_name)
+            else _device_info(entry, coordinator.entry_name)
         )
 
     @property
@@ -379,7 +373,7 @@ class T3LimitCoverageSensor(CoordinatorEntity[T3UsageCoordinator], SensorEntity)
         self._attr_name = "Reported provider limit windows"
         self._attr_unique_id = f"{entry.entry_id}_limit_window_count"
         self._attr_icon = "mdi:format-list-numbered"
-        self._attr_device_info = _device_info(entry, coordinator.environment_name)
+        self._attr_device_info = _device_info(entry, coordinator.entry_name)
 
     @property
     def available(self) -> bool:

@@ -30,6 +30,8 @@ class _EnvironmentState:
     name: str
     client: T3Client
     threads: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Removed or archived threads, so restoring one is not reported as new.
+    removed_threads: dict[str, dict[str, Any]] = field(default_factory=dict)
     sequence: int = 0
     stream_connected: bool = False
     snapshot_available: bool = False
@@ -55,7 +57,7 @@ class T3CodeCoordinator(DataUpdateCoordinator[dict[str, int]]):
         )
         if not clients:
             raise ValueError("At least one T3 environment client is required")
-        self.environment_name = name
+        self.entry_name = name
         self.entry = entry
         self.entry_id = entry.entry_id
         self._environments = {
@@ -336,14 +338,17 @@ class T3CodeCoordinator(DataUpdateCoordinator[dict[str, int]]):
                 incoming_thread.get("id") if isinstance(incoming_thread, dict) else None
             )
             previous_thread = (
-                state.threads.get(thread_id) if isinstance(thread_id, str) else None
+                state.threads.get(thread_id, state.removed_threads.get(thread_id))
+                if isinstance(thread_id, str)
+                else None
             )
             item_changed = self._apply_stream_item(state, item)
             changed = item_changed or changed
             if (
                 not item_changed
-                or item.get("kind") != "thread-upserted"
+                or item.get("kind") != "thread.updated"
                 or not isinstance(thread_id, str)
+                or thread_id not in state.threads
             ):
                 continue
             updated_thread = state.threads[thread_id]
@@ -365,6 +370,9 @@ class T3CodeCoordinator(DataUpdateCoordinator[dict[str, int]]):
     ) -> bool:
         kind = item.get("kind")
         if kind == "snapshot":
+            # Project enrichment refreshes carry these roots and no threads.
+            if "resolvedRepositoryIdentityRoots" in item:
+                return False
             snapshot = item.get("snapshot")
             if isinstance(snapshot, dict):
                 self._apply_snapshot(state, snapshot)
@@ -378,16 +386,26 @@ class T3CodeCoordinator(DataUpdateCoordinator[dict[str, int]]):
             if sequence <= state.sequence:
                 return False
             state.sequence = sequence
-        if kind == "thread-removed":
-            state.threads.pop(item.get("threadId"), None)
-        elif kind == "thread-upserted":
+        if kind == "thread.removed":
+            self._remove_thread(state, item.get("threadId"))
+        elif kind == "thread.updated":
             thread = item.get("thread")
             if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
                 return False
-            state.threads[thread["id"]] = thread
+            if item.get("location") == "archive":
+                self._remove_thread(state, thread["id"])
+            else:
+                state.threads[thread["id"]] = thread
+                state.removed_threads.pop(thread["id"], None)
         else:
             return False
         return True
+
+    @staticmethod
+    def _remove_thread(state: _EnvironmentState, thread_id: Any) -> None:
+        thread = state.threads.pop(thread_id, None)
+        if thread is not None:
+            state.removed_threads[thread_id] = thread
 
     def _publish(self) -> None:
         counts = [shell_metrics(state.threads) for state in self._environments.values()]

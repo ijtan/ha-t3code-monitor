@@ -17,17 +17,31 @@ CONNECTION_TYPE_CONNECT_PAIRING = "connect_pairing"
 
 PLATFORMS = ["sensor", "binary_sensor", "event"]
 
-SESSION_STATUSES = (
+# A thread's status is its latest run's status, or idle before its first run.
+THREAD_STATUSES = (
+    "idle",
+    "preparing",
+    "queued",
     "starting",
     "running",
-    "ready",
-    "idle",
+    "waiting",
+    "completed",
     "interrupted",
-    "stopped",
-    "error",
+    "failed",
+    "cancelled",
+    "rolled_back",
 )
+APPROVAL_REQUEST_KINDS = (
+    "command",
+    "file-read",
+    "file-change",
+    "mcp-elicitation",
+    "permission",
+)
+USER_INPUT_REQUEST_KIND = "user_input"
 
 RPC_SUBSCRIBE_SHELL = "orchestration.subscribeShell"
 RPC_SERVER_GET_USAGE_SUMMARY = "server.getUsageSummary"
 RPC_SUBSCRIBE_SERVER_CONFIG = "subscribeServerConfig"
-ORCHESTRATION_PROTOCOL_VERSION = 1
+ORCHESTRATION_PROTOCOL_VERSION = 2
+ORCHESTRATION_PROTOCOL_HEADER = "x-t3-orchestration-protocol"

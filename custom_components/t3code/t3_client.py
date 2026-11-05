@@ -12,6 +12,7 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 from aiohttp import ClientError, ClientSession, WSMsgType
 
 from .const import (
+    ORCHESTRATION_PROTOCOL_HEADER,
     ORCHESTRATION_PROTOCOL_VERSION,
     RPC_SERVER_GET_USAGE_SUMMARY,
     RPC_SUBSCRIBE_SERVER_CONFIG,
@@ -183,9 +184,11 @@ class T3Client:
         """Fetch a baseline snapshot over authenticated HTTP."""
         try:
             url = f"{self._base_url}/api/orchestration/shell"
-            async with self._session.get(
-                url, headers=self._auth_headers("GET", url)
-            ) as response:
+            headers = {
+                **self._auth_headers("GET", url),
+                ORCHESTRATION_PROTOCOL_HEADER: str(ORCHESTRATION_PROTOCOL_VERSION),
+            }
+            async with self._session.get(url, headers=headers) as response:
                 if response.status in (401, 403):
                     raise T3ClientError(
                         "T3 Code rejected the environment token or read scope"

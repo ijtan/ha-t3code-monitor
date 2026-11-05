@@ -24,7 +24,12 @@ def test_shell_subscription_uses_effect_rpc_json_envelope() -> None:
 
 
 def test_shell_chunk_reads_effect_rpc_values_for_matching_request() -> None:
-    item = {"kind": "thread-upserted", "sequence": 43, "thread": {"id": "t1"}}
+    item = {
+        "kind": "thread.updated",
+        "sequence": 43,
+        "location": "active",
+        "thread": {"id": "t1"},
+    }
 
     assert _shell_chunk_items(
         {"_tag": "Chunk", "requestId": "1", "values": [item]}, "1"
