@@ -48,7 +48,7 @@ class T3UsageCoordinator(DataUpdateCoordinator[UsageCoordinatorData]):
             name=f"{DOMAIN}_{name}_usage",
             update_interval=None,
         )
-        self.environment_name = name
+        self.entry_name = name
         self.entry = entry
         self.entry_id = entry.entry_id
         self._clients = clients

@@ -41,7 +41,7 @@ class T3CodeEventEntity(EventEntity):
         self._attr_unique_id = f"{entry.entry_id}_activity"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": coordinator.environment_name,
+            "name": coordinator.entry_name,
             "manufacturer": "T3",
             "model": "T3 Code Monitor",
         }
@@ -67,5 +67,6 @@ class T3CodeEventEntity(EventEntity):
     def _handle_event(self, event_type: str) -> Callable[[dict[str, Any]], None]:
         def trigger(event_data: dict[str, Any]) -> None:
             self._trigger_event(event_type, event_data)
+            self.async_write_ha_state()
 
         return trigger
