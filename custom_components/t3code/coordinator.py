@@ -55,7 +55,7 @@ class T3CodeCoordinator(DataUpdateCoordinator[dict[str, int]]):
         )
         if not clients:
             raise ValueError("At least one T3 environment client is required")
-        self.environment_name = name
+        self.entry_name = name
         self.entry = entry
         self.entry_id = entry.entry_id
         self._environments = {

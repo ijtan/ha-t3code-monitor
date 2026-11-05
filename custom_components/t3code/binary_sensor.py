@@ -50,7 +50,7 @@ class T3CodeConnectionSensor(CoordinatorEntity[T3CodeCoordinator], BinarySensorE
         self._attr_unique_id = f"{entry.entry_id}_connection"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": coordinator.environment_name,
+            "name": coordinator.entry_name,
             "manufacturer": "T3",
             "model": "T3 Code Monitor",
         }
